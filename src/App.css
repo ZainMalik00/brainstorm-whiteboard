@@ -1,0 +1,114 @@
+.link-path-hit {
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.link-path {
+  pointer-events: none;
+}
+
+.link-path--selected {
+  stroke-width: 3px;
+  filter: drop-shadow(0 0 2px rgba(126, 87, 194, 0.6));
+}
+
+.box-preview img {
+  max-width: 100%;
+  height: auto;
+}
+
+.box-preview .wb-inline-image,
+.ProseMirror .wb-inline-image {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.ProseMirror .wb-inline-image-node {
+  position: relative;
+  display: inline-flex;
+  margin: 0.15rem 0.1rem;
+  line-height: 0;
+  vertical-align: middle;
+}
+
+.ProseMirror .wb-inline-image-node.is-selected {
+  outline: 2px solid rgba(126, 87, 194, 0.9);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.ProseMirror .wb-inline-image-handle {
+  position: absolute;
+  right: -7px;
+  bottom: -7px;
+  display: none;
+  width: 14px;
+  height: 14px;
+  cursor: se-resize;
+  border: 1px solid rgba(126, 87, 194, 0.85);
+  border-radius: 9999px;
+  background: white;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.25);
+}
+
+.ProseMirror .wb-inline-image-node.is-selected .wb-inline-image-handle {
+  display: block;
+}
+
+.box-preview a,
+.ProseMirror a {
+  color: #1565c0;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.box-preview,
+.ProseMirror {
+  word-wrap: break-word;
+  white-space: pre-wrap;
+  white-space: break-spaces;
+  outline: none;
+  min-height: 0;
+}
+
+.box-preview {
+  cursor: default;
+}
+
+.ProseMirror {
+  cursor: text;
+}
+
+.box-preview p,
+.ProseMirror p {
+  margin: 0.2rem 0;
+}
+
+.box-preview h1,
+.box-preview h2,
+.box-preview h3,
+.ProseMirror h1,
+.ProseMirror h2,
+.ProseMirror h3 {
+  margin: 0.35rem 0 0.15rem;
+  line-height: 1.2;
+}
+
+.box-preview ul,
+.box-preview ol,
+.ProseMirror ul,
+.ProseMirror ol {
+  margin: 0.25rem 0;
+  padding-left: 1.25rem;
+}
+
+.box-preview pre,
+.ProseMirror pre {
+  white-space: pre-wrap;
+}
+
+.box-preview li,
+.ProseMirror li {
+  position: relative;
+}
