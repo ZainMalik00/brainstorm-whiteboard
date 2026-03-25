@@ -61,6 +61,7 @@ export interface WhiteboardState extends WhiteboardRuntime {
   tool: BoardTool;
   /** When tool === "link", first clicked box id */
   linkSourceId: string | null;
+  boardFileName: string | null;
   past: string[];
   future: string[];
 }
@@ -69,11 +70,12 @@ type WhiteboardActions = {
   pushSnapshot: () => void;
   undo: () => void;
   redo: () => void;
-  loadFromFileJson: (text: string) => void;
-  loadFromFileData: (file: WhiteboardFile) => void;
+  loadFromFileJson: (text: string, fileName?: string | null) => void;
+  loadFromFileData: (file: WhiteboardFile, fileName?: string | null) => void;
   newBoard: () => void;
   exportFile: () => WhiteboardFile;
   exportFileJson: () => string;
+  setBoardFileName: (fileName: string | null) => void;
   addBox: (x: number, y: number) => void;
   addImageBox: (asset: ImageAsset, x: number, y: number) => void;
   upsertAsset: (asset: ImageAsset) => void;
@@ -115,6 +117,7 @@ const initialState: WhiteboardState = {
   selectedLinkId: null,
   tool: "select",
   linkSourceId: null,
+  boardFileName: null,
   past: [],
   future: [],
 };
@@ -164,7 +167,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
         s.linkSourceId = null;
       }),
 
-    loadFromFileJson: (text: string) => {
+    loadFromFileJson: (text: string, fileName = null) => {
       const file = parseWhiteboardFileJson(text);
       const rt = runtimeFromFile(file);
       clearAssetStore();
@@ -174,12 +177,13 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
         s.selectedLinkId = null;
         s.tool = "select";
         s.linkSourceId = null;
+        s.boardFileName = fileName?.trim() ? fileName.trim() : null;
         s.past = [];
         s.future = [];
       });
     },
 
-    loadFromFileData: (file) => {
+    loadFromFileData: (file, fileName = null) => {
       const rt = runtimeFromFile(file);
       set((s) => {
         applyCore(s, rt);
@@ -187,6 +191,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
         s.selectedLinkId = null;
         s.tool = "select";
         s.linkSourceId = null;
+        s.boardFileName = fileName?.trim() ? fileName.trim() : null;
         s.past = [];
         s.future = [];
       });
@@ -201,6 +206,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
         s.selectedLinkId = null;
         s.tool = "select";
         s.linkSourceId = null;
+        s.boardFileName = null;
         s.past = [];
         s.future = [];
       });
@@ -221,6 +227,11 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
     exportFileJson: () => {
       return stringifyWhiteboardFile(get().exportFile());
     },
+
+    setBoardFileName: (fileName) =>
+      set((s) => {
+        s.boardFileName = fileName?.trim() ? fileName.trim() : null;
+      }),
 
     addBox: (x, y) => {
       get().pushSnapshot();

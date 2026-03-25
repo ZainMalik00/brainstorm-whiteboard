@@ -4,6 +4,7 @@ import { BoardView } from "./components/BoardView";
 import { DevPerfOverlay } from "./components/DevPerfOverlay";
 import { Toolbar } from "./components/Toolbar";
 import { parseBoxClipboard } from "./model/boxClipboard";
+import { getBoardDocumentTitle } from "./model/boardFileName";
 import { registerImageBlob } from "./persistence/assetStore";
 import { useWhiteboardStore } from "./store/whiteboardStore";
 import "./App.css";
@@ -30,6 +31,8 @@ function getClipboardImageFile(data: DataTransfer | null): File | null {
 }
 
 export default function App() {
+  const boardFileName = useWhiteboardStore((s) => s.boardFileName);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (isTypingInRichTextOrForm(e.target)) return;
@@ -90,6 +93,10 @@ export default function App() {
       window.removeEventListener("paste", onPaste, true);
     };
   }, []);
+
+  useEffect(() => {
+    document.title = getBoardDocumentTitle(boardFileName);
+  }, [boardFileName]);
 
   return (
     <EditorRegistryProvider>

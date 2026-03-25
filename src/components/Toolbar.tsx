@@ -28,6 +28,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { toggleMark } from "prosemirror-commands";
 import type { EditorView } from "prosemirror-view";
 import { boardSchema } from "../editor/schema";
+import { toBoardBundleFileName } from "../model/boardFileName";
 import { setTextAlign, setTextStyle, type TextAlign } from "../editor/textStyle";
 import { useEditorRegistry } from "../context/EditorRegistryContext";
 import { getPaletteEntries } from "../model/palette";
@@ -176,9 +177,11 @@ export function Toolbar() {
   const selectedLinkId = useWhiteboardStore((s) => s.selectedLinkId);
   const tool = useWhiteboardStore((s) => s.tool);
   const palette = useWhiteboardStore((s) => s.palette);
+  const boardFileName = useWhiteboardStore((s) => s.boardFileName);
   const newBoard = useWhiteboardStore((s) => s.newBoard);
   const loadFromFileData = useWhiteboardStore((s) => s.loadFromFileData);
   const exportFile = useWhiteboardStore((s) => s.exportFile);
+  const setBoardFileName = useWhiteboardStore((s) => s.setBoardFileName);
   const undo = useWhiteboardStore((s) => s.undo);
   const redo = useWhiteboardStore((s) => s.redo);
   const addBox = useWhiteboardStore((s) => s.addBox);
@@ -253,8 +256,10 @@ export function Toolbar() {
   );
 
   const onSave = async () => {
+    const nextFileName = toBoardBundleFileName(boardFileName);
     try {
-      await downloadBoardBundle(exportFile(), "whiteboard.wbz");
+      await downloadBoardBundle(exportFile(), nextFileName);
+      setBoardFileName(nextFileName);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Unable to save board.");
     }
@@ -270,7 +275,7 @@ export function Toolbar() {
     try {
       const loaded = await readBoardFile(f);
       replaceAssetStore(loaded.assets);
-      loadFromFileData(loaded.file);
+      loadFromFileData(loaded.file, f.name);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Unable to open board.");
     }

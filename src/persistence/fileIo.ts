@@ -1,4 +1,5 @@
 import type JSZip from "jszip";
+import { DEFAULT_BOARD_FILE_NAME } from "../model/boardFileName";
 import { parseWhiteboardFileJson, stringifyWhiteboardFile } from "../model/serialize";
 import type { WhiteboardFile, ImageAsset } from "../model/types";
 import { buildAssetBundlePath, getAssetBlob } from "./assetStore";
@@ -60,7 +61,10 @@ async function readBundleAsset(zip: JSZip, asset: ImageAsset): Promise<{ asset: 
   };
 }
 
-export async function downloadBoardBundle(file: WhiteboardFile, filename = "whiteboard.wbz"): Promise<void> {
+export async function downloadBoardBundle(
+  file: WhiteboardFile,
+  filename = DEFAULT_BOARD_FILE_NAME,
+): Promise<void> {
   const blob = await createBoardBundleBlob(file);
   downloadBlob(blob, filename);
 }
