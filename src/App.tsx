@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { EditorRegistryProvider } from "./context/EditorRegistryContext";
 import { BoardView } from "./components/BoardView";
 import { DevPerfOverlay } from "./components/DevPerfOverlay";
-import { Toolbar } from "./components/Toolbar";
+import { Toolbar } from "./components/toolbar/Toolbar";
 import { parseBoxClipboard } from "./model/boxClipboard";
 import { getBoardDocumentTitle } from "./model/boardFileName";
 import { registerImageBlob } from "./persistence/assetStore";
