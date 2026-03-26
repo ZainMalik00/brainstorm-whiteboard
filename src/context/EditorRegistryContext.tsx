@@ -1,6 +1,8 @@
 /* eslint-disable react-refresh/only-export-components -- hook + provider module */
 import { createContext, useCallback, useContext, useMemo, useRef, type ReactNode } from "react";
 import type { EditorView } from "prosemirror-view";
+import type { ProseMirrorDocJSON } from "../model/types";
+import { useWhiteboardStore } from "../store/whiteboardStore";
 
 type Registry = Map<string, EditorView>;
 type Listener = () => void;
@@ -11,6 +13,7 @@ type Ctx = {
   getView: (id: string | null) => EditorView | null;
   subscribe: (listener: Listener) => () => void;
   notifyViewsChanged: () => void;
+  flushAllEditorsToStore: () => void;
 };
 
 const EditorRegistryContext = createContext<Ctx | null>(null);
@@ -38,14 +41,24 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
     return mapRef.current.get(id) ?? null;
   }, []);
 
+  const flushAllEditorsToStore = useCallback(() => {
+    const { updateBoxContent, boxesById } = useWhiteboardStore.getState();
+    for (const [id, view] of mapRef.current) {
+      const box = boxesById[id];
+      if (box?.kind === "text") {
+        updateBoxContent(id, view.state.doc.toJSON() as ProseMirrorDocJSON);
+      }
+    }
+  }, []);
+
   const subscribe = useCallback((listener: Listener) => {
     listenersRef.current.add(listener);
     return () => listenersRef.current.delete(listener);
   }, []);
 
   const value = useMemo(
-    () => ({ register, unregister, getView, subscribe, notifyViewsChanged }),
-    [register, unregister, getView, subscribe, notifyViewsChanged],
+    () => ({ register, unregister, getView, subscribe, notifyViewsChanged, flushAllEditorsToStore }),
+    [register, unregister, getView, subscribe, notifyViewsChanged, flushAllEditorsToStore],
   );
 
   return (

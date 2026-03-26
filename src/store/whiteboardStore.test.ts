@@ -4,12 +4,21 @@ import { useWhiteboardStore } from "./whiteboardStore";
 
 function resetStore() {
   const runtime = createEmptyRuntime();
+  const lastSavedCoreJson = JSON.stringify({
+    viewport: runtime.viewport,
+    palette: runtime.palette,
+    assetsById: runtime.assetsById,
+    boxesById: runtime.boxesById,
+    links: runtime.links,
+  });
   useWhiteboardStore.setState({
     ...runtime,
     selectedBoxId: null,
     selectedLinkId: null,
     tool: "select",
     linkSourceId: null,
+    boardFileName: null,
+    lastSavedCoreJson,
     past: [],
     future: [],
   });

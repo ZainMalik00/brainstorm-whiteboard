@@ -191,7 +191,7 @@ export function Toolbar() {
   const toolbarOverflowRef = useRef<HTMLDivElement>(null);
   const toolbarOverflowToggleRef = useRef<HTMLButtonElement>(null);
   const primaryToolbarRowRef = useRef<HTMLDivElement>(null);
-  const { getView, subscribe } = useEditorRegistry();
+  const { getView, subscribe, flushAllEditorsToStore } = useEditorRegistry();
   const isLgViewport = useSyncExternalStore(
     subscribeLgMinWidth,
     getLgMinWidthSnapshot,
@@ -216,6 +216,7 @@ export function Toolbar() {
     newBoard,
     exportFile,
     setBoardFileName,
+    markBoardSaved,
     undo,
     redo,
     addBox,
@@ -241,6 +242,7 @@ export function Toolbar() {
       newBoard: s.newBoard,
       exportFile: s.exportFile,
       setBoardFileName: s.setBoardFileName,
+      markBoardSaved: s.markBoardSaved,
       undo: s.undo,
       redo: s.redo,
       addBox: s.addBox,
@@ -307,16 +309,44 @@ export function Toolbar() {
   );
 
   const onSave = useCallback(async () => {
+    flushAllEditorsToStore();
     const nextFileName = toBoardBundleFileName(boardFileName);
     try {
       await downloadBoardBundle(exportFile(), nextFileName);
       setBoardFileName(nextFileName);
+      markBoardSaved();
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Unable to save board.");
     }
-  }, [boardFileName, exportFile, setBoardFileName]);
+  }, [boardFileName, exportFile, flushAllEditorsToStore, markBoardSaved, setBoardFileName]);
 
-  const onOpenPick = useCallback(() => boardFileInputRef.current?.click(), []);
+  const onRequestNewBoard = useCallback(() => {
+    flushAllEditorsToStore();
+    if (useWhiteboardStore.getState().hasUnsavedChanges()) {
+      if (
+        !window.confirm(
+          "You have unsaved changes. Create a new board anyway? Your changes will be lost.",
+        )
+      ) {
+        return;
+      }
+    }
+    newBoard();
+  }, [flushAllEditorsToStore, newBoard]);
+
+  const onRequestOpenPick = useCallback(() => {
+    flushAllEditorsToStore();
+    if (useWhiteboardStore.getState().hasUnsavedChanges()) {
+      if (
+        !window.confirm(
+          "You have unsaved changes. Open another board anyway? Your changes will be lost.",
+        )
+      ) {
+        return;
+      }
+    }
+    boardFileInputRef.current?.click();
+  }, [flushAllEditorsToStore]);
   const onPickImage = useCallback(() => imageFileInputRef.current?.click(), []);
 
   const onOpenFile: ChangeEventHandler<HTMLInputElement> = async (e) => {
@@ -349,8 +379,8 @@ export function Toolbar() {
       buildPreMenuSlotConfig({
         selectedBoxId,
         tool,
-        newBoard,
-        onOpenPick,
+        newBoard: onRequestNewBoard,
+        onOpenPick: onRequestOpenPick,
         onSave,
         undo,
         redo,
@@ -362,9 +392,9 @@ export function Toolbar() {
     [
       addBox,
       deleteSelectedBox,
-      newBoard,
-      onOpenPick,
       onPickImage,
+      onRequestNewBoard,
+      onRequestOpenPick,
       onSave,
       redo,
       selectedBoxId,
