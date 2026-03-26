@@ -4,6 +4,8 @@ Brainstorm Whiteboard is a browser-based canvas for organizing ideas visually. Y
 
 It is built with React, TypeScript, Zustand, and ProseMirror, and runs as a local Vite app with no backend required. Vibe Coded With Cursor AI 
 
+https://brainstorm-whiteboard.zmmalik00.workers.dev/
+
 ## What The App Does
 
 - Creates text boxes for notes, ideas, and short documents.

@@ -3,6 +3,7 @@ import { createContext, useContext, type ReactNode } from "react";
 
 export type BoardTransform = {
   clientToWorld: (clientX: number, clientY: number) => { x: number; y: number };
+  isViewportTouchGestureActive: () => boolean;
 };
 
 const BoardTransformContext = createContext<BoardTransform | null>(null);

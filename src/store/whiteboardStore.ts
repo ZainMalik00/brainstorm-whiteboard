@@ -62,6 +62,8 @@ export interface WhiteboardState extends WhiteboardRuntime {
   /** When tool === "link", first clicked box id */
   linkSourceId: string | null;
   boardFileName: string | null;
+  /** Core snapshot JSON at last load / new board / successful save — for dirty detection */
+  lastSavedCoreJson: string;
   past: string[];
   future: string[];
 }
@@ -76,6 +78,8 @@ type WhiteboardActions = {
   exportFile: () => WhiteboardFile;
   exportFileJson: () => string;
   setBoardFileName: (fileName: string | null) => void;
+  markBoardSaved: () => void;
+  hasUnsavedChanges: () => boolean;
   addBox: (x: number, y: number) => void;
   addImageBox: (asset: ImageAsset, x: number, y: number) => void;
   upsertAsset: (asset: ImageAsset) => void;
@@ -118,6 +122,7 @@ const initialState: WhiteboardState = {
   tool: "select",
   linkSourceId: null,
   boardFileName: null,
+  lastSavedCoreJson: snapshotCore(initialRuntime),
   past: [],
   future: [],
 };
@@ -180,6 +185,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
         s.boardFileName = fileName?.trim() ? fileName.trim() : null;
         s.past = [];
         s.future = [];
+        s.lastSavedCoreJson = snapshotCore(s);
       });
     },
 
@@ -194,6 +200,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
         s.boardFileName = fileName?.trim() ? fileName.trim() : null;
         s.past = [];
         s.future = [];
+        s.lastSavedCoreJson = snapshotCore(s);
       });
     },
 
@@ -209,6 +216,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
         s.boardFileName = null;
         s.past = [];
         s.future = [];
+        s.lastSavedCoreJson = snapshotCore(s);
       });
     },
 
@@ -232,6 +240,13 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
       set((s) => {
         s.boardFileName = fileName?.trim() ? fileName.trim() : null;
       }),
+
+    markBoardSaved: () =>
+      set((s) => {
+        s.lastSavedCoreJson = snapshotCore(s);
+      }),
+
+    hasUnsavedChanges: () => snapshotCore(get()) !== get().lastSavedCoreJson,
 
     addBox: (x, y) => {
       get().pushSnapshot();

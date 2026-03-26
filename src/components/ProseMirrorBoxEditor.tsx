@@ -5,6 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { buildBoardEditorPlugins, buildBoardNodeViews } from "../editor/plugins";
 import { boardSchema } from "../editor/schema";
 import { insertLinkedText, isLikelyUrl, normalizeLinkAttrs } from "../editor/textStyle";
+import { useBoardTransform } from "../context/BoardTransformContext";
 import { useEditorRegistry } from "../context/EditorRegistryContext";
 import type { ProseMirrorDocJSON } from "../model/types";
 import { registerImageBlob } from "../persistence/assetStore";
@@ -53,6 +54,7 @@ export function ProseMirrorBoxEditor({ boxId, content, editable, textColor, onCh
   onChangeRef.current = onChange;
   const { register, unregister, notifyViewsChanged } = useEditorRegistry();
   const upsertAsset = useWhiteboardStore((s) => s.upsertAsset);
+  const { isViewportTouchGestureActive } = useBoardTransform();
 
   const flush = useCallback(() => {
     const v = viewRef.current;
@@ -123,7 +125,7 @@ export function ProseMirrorBoxEditor({ boxId, content, editable, textColor, onCh
     const view = new EditorView(el, {
       state,
       editable: () => editable,
-      nodeViews: buildBoardNodeViews(),
+      nodeViews: buildBoardNodeViews({ isViewportTouchGestureActive }),
       handlePaste,
       handleClick: handleEditorClick,
       dispatchTransaction(tr) {
@@ -149,7 +151,16 @@ export function ProseMirrorBoxEditor({ boxId, content, editable, textColor, onCh
     };
     // Recreate editor only when `boxId` changes; `content` syncs via effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount doc from props once per box
-  }, [boxId, flush, handleEditorClick, handlePaste, notifyViewsChanged, register, unregister]);
+  }, [
+    boxId,
+    flush,
+    handleEditorClick,
+    handlePaste,
+    isViewportTouchGestureActive,
+    notifyViewsChanged,
+    register,
+    unregister,
+  ]);
 
   useEffect(() => {
     viewRef.current?.setProps({ editable: () => editable });
