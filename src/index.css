@@ -13,6 +13,11 @@ body,
   margin: 0;
 }
 
+html,
+body {
+  overscroll-behavior: none;
+}
+
 body {
   font-family: system-ui, sans-serif;
   background: #f5f5f7;

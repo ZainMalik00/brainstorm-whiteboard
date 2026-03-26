@@ -14,6 +14,9 @@ const MIN_H = 80;
 type DragState = {
   kind: "move" | "resize";
   pointerId: number;
+  pointerType: string;
+  captureTarget: HTMLElement | null;
+  abortController: AbortController;
   originWorldX: number;
   originWorldY: number;
   startBoxX: number;
@@ -40,7 +43,7 @@ export const Box = memo(function Box({ boxId }: Props) {
   const commitBoxPosition = useWhiteboardStore((s) => s.commitBoxPosition);
   const commitBoxSize = useWhiteboardStore((s) => s.commitBoxSize);
 
-  const { clientToWorld } = useBoardTransform();
+  const { clientToWorld, isViewportTouchGestureActive } = useBoardTransform();
 
   /** Live x,y,w,h during drag/resize — drives React style so PM/store updates cannot snap the box back. */
   const [liveLayout, setLiveLayout] = useState<{
@@ -90,6 +93,12 @@ export const Box = memo(function Box({ boxId }: Props) {
       setLiveLayout(null);
       return;
     }
+    d.abortController.abort();
+    try {
+      d.captureTarget?.releasePointerCapture(d.pointerId);
+    } catch {
+      /* already released */
+    }
     if (d.kind === "move") {
       if (d.curX !== d.startBoxX || d.curY !== d.startBoxY) {
         commitBoxPosition(boxId, d.curX, d.curY);
@@ -103,10 +112,30 @@ export const Box = memo(function Box({ boxId }: Props) {
     setLiveLayout(null);
   }, [boxId, commitBoxPosition, commitBoxSize]);
 
+  const cancelDrag = useCallback(() => {
+    const d = dragRef.current;
+    dragRef.current = null;
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    d?.abortController.abort();
+    try {
+      d?.captureTarget?.releasePointerCapture(d.pointerId);
+    } catch {
+      /* already released */
+    }
+    setLiveLayout(null);
+  }, []);
+
   const onPointerMove = useCallback(
     (e: PointerEvent) => {
       const d = dragRef.current;
       if (!d || e.pointerId !== d.pointerId) return;
+      if (d.pointerType === "touch" && isViewportTouchGestureActive()) {
+        cancelDrag();
+        return;
+      }
       const w = clientToWorld(e.clientX, e.clientY);
       const dx = w.x - d.originWorldX;
       const dy = w.y - d.originWorldY;
@@ -128,32 +157,39 @@ export const Box = memo(function Box({ boxId }: Props) {
       }
       scheduleLayoutFlush();
     },
-    [clientToWorld, scheduleLayoutFlush],
+    [cancelDrag, clientToWorld, isViewportTouchGestureActive, scheduleLayoutFlush],
   );
 
   const onPointerUp = useCallback(
     (e: PointerEvent) => {
       if (dragRef.current?.pointerId !== e.pointerId) return;
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-      window.removeEventListener("pointercancel", onPointerUp);
+      if (dragRef.current.pointerType === "touch" && isViewportTouchGestureActive()) {
+        cancelDrag();
+        return;
+      }
       endDrag();
     },
-    [endDrag, onPointerMove],
+    [cancelDrag, endDrag, isViewportTouchGestureActive],
   );
 
   const startMove = useCallback(
     (e: React.PointerEvent) => {
       if (e.button !== 0 || tool !== "select") return;
+      if (e.pointerType === "touch" && isViewportTouchGestureActive()) return;
       const b = useWhiteboardStore.getState().boxesById[boxId];
       if (!b) return;
       e.stopPropagation();
       e.preventDefault();
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      const captureTarget = e.currentTarget as HTMLElement;
+      captureTarget.setPointerCapture(e.pointerId);
+      const abortController = new AbortController();
       const w = clientToWorld(e.clientX, e.clientY);
       dragRef.current = {
         kind: "move",
         pointerId: e.pointerId,
+        pointerType: e.pointerType,
+        captureTarget,
+        abortController,
         originWorldX: w.x,
         originWorldY: w.y,
         startBoxX: b.x,
@@ -167,25 +203,39 @@ export const Box = memo(function Box({ boxId }: Props) {
         curH: b.height,
       };
       flushLiveLayoutFromDrag();
-      window.addEventListener("pointermove", onPointerMove);
-      window.addEventListener("pointerup", onPointerUp);
-      window.addEventListener("pointercancel", onPointerUp);
+      window.addEventListener("pointermove", onPointerMove, { signal: abortController.signal });
+      window.addEventListener("pointerup", onPointerUp, { signal: abortController.signal });
+      window.addEventListener("pointercancel", onPointerUp, { signal: abortController.signal });
     },
-    [boxId, clientToWorld, flushLiveLayoutFromDrag, onPointerMove, onPointerUp, tool],
+    [
+      boxId,
+      clientToWorld,
+      flushLiveLayoutFromDrag,
+      isViewportTouchGestureActive,
+      onPointerMove,
+      onPointerUp,
+      tool,
+    ],
   );
 
   const startResize = useCallback(
     (e: React.PointerEvent) => {
       if (e.button !== 0 || tool !== "select" || selectedBoxId !== boxId) return;
+      if (e.pointerType === "touch" && isViewportTouchGestureActive()) return;
       const b = useWhiteboardStore.getState().boxesById[boxId];
       if (!b) return;
       e.stopPropagation();
       e.preventDefault();
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      const captureTarget = e.target as HTMLElement;
+      captureTarget.setPointerCapture(e.pointerId);
+      const abortController = new AbortController();
       const w = clientToWorld(e.clientX, e.clientY);
       dragRef.current = {
         kind: "resize",
         pointerId: e.pointerId,
+        pointerType: e.pointerType,
+        captureTarget,
+        abortController,
         originWorldX: w.x,
         originWorldY: w.y,
         startBoxX: b.x,
@@ -199,14 +249,15 @@ export const Box = memo(function Box({ boxId }: Props) {
         curH: b.height,
       };
       flushLiveLayoutFromDrag();
-      window.addEventListener("pointermove", onPointerMove);
-      window.addEventListener("pointerup", onPointerUp);
-      window.addEventListener("pointercancel", onPointerUp);
+      window.addEventListener("pointermove", onPointerMove, { signal: abortController.signal });
+      window.addEventListener("pointerup", onPointerUp, { signal: abortController.signal });
+      window.addEventListener("pointercancel", onPointerUp, { signal: abortController.signal });
     },
     [
       boxId,
       clientToWorld,
       flushLiveLayoutFromDrag,
+      isViewportTouchGestureActive,
       onPointerMove,
       onPointerUp,
       selectedBoxId,
@@ -219,6 +270,7 @@ export const Box = memo(function Box({ boxId }: Props) {
   const beginBoxInteraction = (e: React.PointerEvent): boolean => {
     const target = e.target;
     if (target instanceof Element && target.closest("a[href]")) return false;
+    if (e.pointerType === "touch" && isViewportTouchGestureActive()) return false;
 
     e.stopPropagation();
     if (tool === "link") {

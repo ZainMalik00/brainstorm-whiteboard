@@ -4,6 +4,9 @@ import type { EditorView, NodeView } from "prosemirror-view";
 import { getAssetUrl } from "../persistence/assetStore";
 
 type GetPos = boolean | (() => number | undefined);
+type BoardNodeViewOptions = {
+  isViewportTouchGestureActive?: () => boolean;
+};
 
 function toDimension(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
@@ -40,11 +43,18 @@ class BoardImageNodeView implements NodeView {
   private imageEl: HTMLImageElement;
   private handleEl: HTMLButtonElement;
   private cleanupResize: (() => void) | null = null;
+  private isViewportTouchGestureActive: () => boolean;
 
-  constructor(node: ProseMirrorNode, view: EditorView, getPos: GetPos) {
+  constructor(
+    node: ProseMirrorNode,
+    view: EditorView,
+    getPos: GetPos,
+    options: BoardNodeViewOptions = {},
+  ) {
     this.node = node;
     this.view = view;
     this.getPos = getPos;
+    this.isViewportTouchGestureActive = options.isViewportTouchGestureActive ?? (() => false);
 
     this.dom = document.createElement("span");
     this.dom.className = "wb-inline-image-node";
@@ -110,6 +120,10 @@ class BoardImageNodeView implements NodeView {
   };
 
   private handleHandlePointerDown = (event: PointerEvent) => {
+    if (event.pointerType === "touch" && this.isViewportTouchGestureActive()) {
+      event.preventDefault();
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
 
@@ -127,6 +141,10 @@ class BoardImageNodeView implements NodeView {
     const startY = event.clientY;
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerType === "touch" && this.isViewportTouchGestureActive()) {
+        cleanup();
+        return;
+      }
       const dx = moveEvent.clientX - startX;
       const dy = moveEvent.clientY - startY;
       const widthScale = (startWidth + dx) / startWidth;
@@ -168,13 +186,13 @@ class BoardImageNodeView implements NodeView {
   }
 }
 
-export function buildBoardNodeViews(): Record<
+export function buildBoardNodeViews(options: BoardNodeViewOptions = {}): Record<
   string,
   (node: ProseMirrorNode, view: EditorView, getPos: GetPos) => NodeView
 > {
   return {
     image(node, view, getPos) {
-      return new BoardImageNodeView(node, view, getPos);
+      return new BoardImageNodeView(node, view, getPos, options);
     },
   };
 }

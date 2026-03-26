@@ -6,6 +6,10 @@ import { Box } from "./Box";
 import { LinkLayer } from "./LinkLayer";
 import { linkMidpointWorld } from "../model/linkMidpoint";
 import type { Viewport } from "../model/types";
+import {
+  buildViewportFromTwoTouchGesture,
+  type LocalTouchPoint,
+} from "../model/viewportGesture";
 
 const WHEEL_COMMIT_MS = 140;
 const ZOOM_MIN = 0.15;
@@ -24,6 +28,42 @@ function isCanvasPanTarget(target: EventTarget | null): boolean {
   if (target.closest(".link-path-hit")) return false;
   if (target.closest(".link-delete-floater")) return false;
   return true;
+}
+
+type ScreenTouchPoint = {
+  clientX: number;
+  clientY: number;
+};
+
+type TouchGestureState = {
+  pointerIds: [number, number];
+  startTouches: [LocalTouchPoint, LocalTouchPoint];
+  startViewport: Viewport;
+};
+
+function getTrackedTouchPoints(
+  pointsByPointerId: Map<number, ScreenTouchPoint>,
+  [pointerIdA, pointerIdB]: readonly [number, number],
+): [ScreenTouchPoint, ScreenTouchPoint] | null {
+  const touchA = pointsByPointerId.get(pointerIdA);
+  const touchB = pointsByPointerId.get(pointerIdB);
+  if (!touchA || !touchB) return null;
+  return [touchA, touchB];
+}
+
+function getTrackedTouchPair(
+  pointsByPointerId: Map<number, ScreenTouchPoint>,
+): [number, number] | null {
+  if (pointsByPointerId.size !== 2) return null;
+  const pointerIds = Array.from(pointsByPointerId.keys());
+  return [pointerIds[0]!, pointerIds[1]!];
+}
+
+function toLocalTouchPoint(point: ScreenTouchPoint, rect: DOMRect): LocalTouchPoint {
+  return {
+    x: point.clientX - rect.left,
+    y: point.clientY - rect.top,
+  };
 }
 
 export const BoardView = memo(function BoardView() {
@@ -48,9 +88,14 @@ export const BoardView = memo(function BoardView() {
   const toolRef = useRef(tool);
   toolRef.current = tool;
 
+  const viewportTouchGestureActiveRef = useRef(false);
+
   const v = liveViewport ?? viewport;
   const liveViewportRef = useRef(v);
   liveViewportRef.current = v;
+
+  const touchPointsRef = useRef(new Map<number, ScreenTouchPoint>());
+  const touchGestureRef = useRef<TouchGestureState | null>(null);
 
   const clientToWorld = useCallback(
     (clientX: number, clientY: number) => {
@@ -71,6 +116,7 @@ export const BoardView = memo(function BoardView() {
   const transformCtx = useMemo(
     () => ({
       clientToWorld,
+      isViewportTouchGestureActive: () => viewportTouchGestureActiveRef.current,
     }),
     [clientToWorld],
   );
@@ -93,23 +139,110 @@ export const BoardView = memo(function BoardView() {
     [setViewport],
   );
 
+  const clearWheelCommit = useCallback(() => {
+    if (!wheelTimerRef.current) return;
+    clearTimeout(wheelTimerRef.current);
+    wheelTimerRef.current = null;
+  }, []);
+
+  const startTouchGesture = useCallback(
+    (): boolean => {
+      const el = viewportRef.current;
+      if (!el) return false;
+
+      const pointerIds = getTrackedTouchPair(touchPointsRef.current);
+      if (!pointerIds) return false;
+
+      const trackedTouches = getTrackedTouchPoints(touchPointsRef.current, pointerIds);
+      if (!trackedTouches) return false;
+
+      clearWheelCommit();
+
+      const rect = el.getBoundingClientRect();
+      touchGestureRef.current = {
+        pointerIds,
+        startTouches: [
+          toLocalTouchPoint(trackedTouches[0], rect),
+          toLocalTouchPoint(trackedTouches[1], rect),
+        ],
+        startViewport: liveViewportRef.current,
+      };
+      viewportTouchGestureActiveRef.current = true;
+      return true;
+    },
+    [clearWheelCommit],
+  );
+
+  const endTouchGesture = useCallback(
+    (commit = true) => {
+      if (!touchGestureRef.current) return;
+      touchGestureRef.current = null;
+      viewportTouchGestureActiveRef.current = false;
+      if (commit) {
+        commitViewport(liveViewportRef.current);
+      }
+    },
+    [commitViewport],
+  );
+
+  const updateTouchGestureViewport = useCallback(() => {
+    const el = viewportRef.current;
+    const gesture = touchGestureRef.current;
+    if (!el || !gesture) return;
+
+    const trackedTouches = getTrackedTouchPoints(touchPointsRef.current, gesture.pointerIds);
+    if (!trackedTouches) return;
+
+    const rect = el.getBoundingClientRect();
+    const next = buildViewportFromTwoTouchGesture({
+      startViewport: gesture.startViewport,
+      startTouches: gesture.startTouches,
+      currentTouches: [
+        toLocalTouchPoint(trackedTouches[0], rect),
+        toLocalTouchPoint(trackedTouches[1], rect),
+      ],
+      minZoom: ZOOM_MIN,
+      maxZoom: ZOOM_MAX,
+    });
+    setLiveViewport(next);
+  }, []);
+
+  const cancelCanvasPan = useCallback(() => {
+    const d = panRef.current;
+    if (!d) return;
+    const el = viewportRef.current;
+    panRef.current = null;
+    setCanvasPointerDown(false);
+    if (el) {
+      try {
+        el.releasePointerCapture(d.pointerId);
+      } catch {
+        /* already released */
+      }
+    }
+  }, []);
+
   const scheduleWheelCommit = useCallback(
     (next: Viewport) => {
       setLiveViewport(next);
-      if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current);
+      clearWheelCommit();
       wheelTimerRef.current = setTimeout(() => {
         wheelTimerRef.current = null;
         commitViewport(next);
       }, WHEEL_COMMIT_MS);
     },
-    [commitViewport],
+    [clearWheelCommit, commitViewport],
   );
 
   useEffect(
     () => () => {
-      if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current);
+      clearWheelCommit();
+      panRef.current = null;
+      touchPointsRef.current.clear();
+      touchGestureRef.current = null;
+      viewportTouchGestureActiveRef.current = false;
     },
-    [],
+    [clearWheelCommit],
   );
 
   const onWheel = useCallback(
@@ -135,9 +268,54 @@ export const BoardView = memo(function BoardView() {
     [liveViewport, scheduleWheelCommit],
   );
 
+  const onViewportPointerDownCapture = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.pointerType !== "touch") return;
+      touchPointsRef.current.set(e.pointerId, {
+        clientX: e.clientX,
+        clientY: e.clientY,
+      });
+      if (!touchGestureRef.current && startTouchGesture()) {
+        cancelCanvasPan();
+        updateTouchGestureViewport();
+      }
+    },
+    [cancelCanvasPan, startTouchGesture, updateTouchGestureViewport],
+  );
+
+  const onViewportPointerMoveCapture = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.pointerType !== "touch") return;
+      if (!touchPointsRef.current.has(e.pointerId)) return;
+      touchPointsRef.current.set(e.pointerId, {
+        clientX: e.clientX,
+        clientY: e.clientY,
+      });
+      const gesture = touchGestureRef.current;
+      if (!gesture) return;
+      if (e.pointerId !== gesture.pointerIds[0] && e.pointerId !== gesture.pointerIds[1]) return;
+      updateTouchGestureViewport();
+    },
+    [updateTouchGestureViewport],
+  );
+
+  const onViewportPointerUpCapture = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.pointerType !== "touch") return;
+      if (!touchPointsRef.current.has(e.pointerId) && !touchGestureRef.current) return;
+      touchPointsRef.current.delete(e.pointerId);
+      const gesture = touchGestureRef.current;
+      if (!gesture) return;
+      if (e.pointerId !== gesture.pointerIds[0] && e.pointerId !== gesture.pointerIds[1]) return;
+      endTouchGesture();
+    },
+    [endTouchGesture],
+  );
+
   const onViewportPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0) return;
     if (!isCanvasPanTarget(e.target)) return;
+    if (touchGestureRef.current) return;
+    if (e.button !== 0 && e.pointerType !== "touch") return;
     e.currentTarget.setPointerCapture(e.pointerId);
     setCanvasPointerDown(true);
     const base = liveViewport ?? viewportRefStore.current;
@@ -236,7 +414,13 @@ export const BoardView = memo(function BoardView() {
         backgroundImage:
           "linear-gradient(rgba(0, 0, 0, 0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 0, 0, 0.04) 1px, transparent 1px)",
         backgroundSize: "24px 24px",
+        overscrollBehavior: "none",
+        touchAction: "none",
       }}
+      onPointerDownCapture={onViewportPointerDownCapture}
+      onPointerMoveCapture={onViewportPointerMoveCapture}
+      onPointerUpCapture={onViewportPointerUpCapture}
+      onPointerCancelCapture={onViewportPointerUpCapture}
       onWheel={onWheel}
       onPointerDown={onViewportPointerDown}
       onPointerMove={onViewportPointerMove}

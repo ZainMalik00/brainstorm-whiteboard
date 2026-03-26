@@ -7,6 +7,7 @@ import {
   ImagePlus,
   Italic,
   Link2,
+  Menu,
   MousePointer2,
   MoveDown,
   MoveUp,
@@ -78,6 +79,8 @@ const SWATCH_BUTTON_CLASS =
 const SMALL_SWATCH_BUTTON_CLASS =
   "h-4 w-4 rounded border border-slate-400 shadow-sm transition hover:scale-110 focus:outline-none focus:ring-2 focus:ring-violet-500/25";
 const ICON_SIZE = 16;
+const TOOLBAR_OVERFLOW_ID = "wb-toolbar-overflow";
+const LG_MIN_WIDTH_MEDIA = "(min-width: 64rem)";
 
 function normalizeFontSizeInput(value: string): string | null {
   const trimmed = value.trim();
@@ -165,6 +168,8 @@ export function Toolbar() {
   const imageFileInputRef = useRef<HTMLInputElement>(null);
   const alignMenuRef = useRef<HTMLDivElement>(null);
   const fontSizeMenuRef = useRef<HTMLDivElement>(null);
+  const toolbarOverflowRef = useRef<HTMLDivElement>(null);
+  const toolbarOverflowToggleRef = useRef<HTMLButtonElement>(null);
   const { getView, subscribe } = useEditorRegistry();
   const [isAlignMenuOpen, setIsAlignMenuOpen] = useState(false);
   const [isFontSizeMenuOpen, setIsFontSizeMenuOpen] = useState(false);
@@ -172,6 +177,7 @@ export function Toolbar() {
   const [selectedTextAlign, setSelectedTextAlign] = useState<TextAlign>("left");
   const [fontSizeInput, setFontSizeInput] = useState("");
   const [isEditingFontSize, setIsEditingFontSize] = useState(false);
+  const [isToolbarOverflowOpen, setIsToolbarOverflowOpen] = useState(false);
 
   const selectedBoxId = useWhiteboardStore((s) => s.selectedBoxId);
   const selectedLinkId = useWhiteboardStore((s) => s.selectedLinkId);
@@ -340,6 +346,41 @@ export function Toolbar() {
     setIsEditingFontSize(false);
   }, [selectedBoxId]);
 
+  useEffect(() => {
+    const mq = window.matchMedia(LG_MIN_WIDTH_MEDIA);
+    const onChange = () => {
+      if (mq.matches) setIsToolbarOverflowOpen(false);
+    };
+    onChange();
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    if (!isToolbarOverflowOpen) return;
+
+    const onPointerDown = (event: PointerEvent) => {
+      const t = event.target as Node;
+      if (toolbarOverflowRef.current?.contains(t)) return;
+      if (toolbarOverflowToggleRef.current?.contains(t)) return;
+      setIsToolbarOverflowOpen(false);
+    };
+
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [isToolbarOverflowOpen]);
+
+  useEffect(() => {
+    if (!isToolbarOverflowOpen) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsToolbarOverflowOpen(false);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isToolbarOverflowOpen]);
+
   return (
     <>
       <header className="z-10 flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-slate-200 bg-white px-3 py-2 shadow-sm">
@@ -388,6 +429,29 @@ export function Toolbar() {
           onClick={() => setTool("link")}
         />
         </div>
+        <button
+          ref={toolbarOverflowToggleRef}
+          type="button"
+          aria-label="More tools"
+          title="More tools"
+          aria-expanded={isToolbarOverflowOpen}
+          aria-controls={TOOLBAR_OVERFLOW_ID}
+          className={`max-lg:ml-auto max-lg:shrink-0 lg:hidden ${ICON_BUTTON_BASE}`}
+          onClick={() => setIsToolbarOverflowOpen((open) => !open)}
+        >
+          <Menu size={ICON_SIZE} />
+        </button>
+        <div
+          ref={toolbarOverflowRef}
+          id={TOOLBAR_OVERFLOW_ID}
+          className={[
+            "flex flex-wrap items-center gap-x-3 gap-y-2 lg:contents",
+            "max-lg:w-full max-lg:basis-full max-lg:border-t max-lg:border-slate-200 max-lg:pt-2 max-lg:max-h-[min(70vh,32rem)] max-lg:overflow-y-auto",
+            !isToolbarOverflowOpen ? "max-lg:hidden" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        >
         {selectedBoxId ? (
           <div className={TOOLBAR_GROUP_CLASS}>
           <label className={SECTION_LABEL_CLASS} htmlFor="wb-box-label-input">
@@ -576,7 +640,9 @@ export function Toolbar() {
               aria-haspopup="listbox"
               aria-expanded={isFontSizeMenuOpen}
               className="absolute inset-y-0 right-0 inline-flex w-7 items-center justify-center text-slate-500"
-              onMouseDown={(e) => e.preventDefault()}
+              onPointerDown={(e) => {
+                if (e.pointerType !== "touch") e.preventDefault();
+              }}
               onClick={() => setIsFontSizeMenuOpen((open) => !open)}
             >
               <ChevronDown size={14} />
@@ -595,7 +661,9 @@ export function Toolbar() {
                     role="option"
                     aria-selected={fontSizeInput === fs}
                     className="block w-full px-2 py-1 text-left text-sm text-slate-700 transition hover:bg-slate-100"
-                    onMouseDown={(e) => e.preventDefault()}
+                    onPointerDown={(e) => {
+                      if (e.pointerType !== "touch") e.preventDefault();
+                    }}
                     onClick={() => {
                       applyFontSize(fs);
                     }}
@@ -647,6 +715,7 @@ export function Toolbar() {
           </div>
           </div>
         ) : null}
+        </div>
       </header>
       <ColorPaletteModal open={isColorModalOpen} onClose={() => setIsColorModalOpen(false)} />
     </>
