@@ -1,8 +1,7 @@
 import { memo, useMemo } from "react";
-import { anchorPoint } from "../model/anchor";
-import { closestEdgeAnchors } from "../model/closestAnchors";
 import { linkMidpointWorld } from "../model/linkMidpoint";
 import { linkPathD } from "../model/linkPath";
+import { computeLinkRouting, type RoutedLink } from "../model/linkRouting";
 import type { Box, Link } from "../model/types";
 
 const LINK_HIT_STROKE_PX = 16;
@@ -20,6 +19,11 @@ export const LinkLayer = memo(function LinkLayer({
   selectedLinkId,
   onSelectLink,
 }: Props) {
+  const routing = useMemo(
+    () => computeLinkRouting(links, boxesById),
+    [links, boxesById],
+  );
+
   const markerDefs = useMemo(() => {
     const markerIdByFill = new Map<string, string>();
     const defs: Array<{ id: string; fill: string }> = [];
@@ -58,15 +62,13 @@ export const LinkLayer = memo(function LinkLayer({
         ))}
       </defs>
       {links.map((link) => {
-        const a = boxesById[link.fromBoxId];
-        const b = boxesById[link.toBoxId];
-        if (!a || !b) return null;
+        const routed = routing.get(link.id);
+        if (!routed) return null;
         return (
           <LinkPathItem
             key={link.id}
             link={link}
-            boxA={a}
-            boxB={b}
+            routed={routed}
             selectedLinkId={selectedLinkId}
             onSelectLink={onSelectLink}
             markerId={markerDefs.markerIdByFill.get(resolveMarkerFill(link.style.stroke)) ?? "wb-arr-0"}
@@ -79,18 +81,16 @@ export const LinkLayer = memo(function LinkLayer({
 
 type ItemProps = {
   link: Link;
-  boxA: Box;
-  boxB: Box;
+  routed: RoutedLink;
   selectedLinkId: string | null;
   onSelectLink: (id: string | null) => void;
   markerId: string;
 };
 
-/** One link’s path; memoized so only this row recomputes when an endpoint box reference changes. */
+/** One link’s path; memoized so only this row recomputes when its routing changes. */
 const LinkPathItem = memo(function LinkPathItem({
   link,
-  boxA,
-  boxB,
+  routed,
   selectedLinkId,
   onSelectLink,
   markerId,
@@ -98,11 +98,8 @@ const LinkPathItem = memo(function LinkPathItem({
   const sel = link.id === selectedLinkId;
 
   const { d, midX, midY, stroke, strokeWidth } = useMemo(() => {
-    const { fromAnchor, toAnchor } = closestEdgeAnchors(boxA, boxB);
-    const p0 = anchorPoint(boxA, fromAnchor);
-    const p1 = anchorPoint(boxB, toAnchor);
-    const dPath = linkPathD(p0.x, p0.y, p1.x, p1.y);
-    const mid = linkMidpointWorld(link, boxA, boxB);
+    const dPath = linkPathD(routed.p0, routed.side0, routed.p1, routed.side1);
+    const mid = linkMidpointWorld(link, routed);
     return {
       d: dPath,
       midX: mid.x,
@@ -110,7 +107,7 @@ const LinkPathItem = memo(function LinkPathItem({
       stroke: link.style.stroke,
       strokeWidth: link.style.strokeWidth,
     };
-  }, [boxA, boxB, link]);
+  }, [routed, link]);
 
   return (
     <g>

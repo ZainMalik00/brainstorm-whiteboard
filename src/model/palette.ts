@@ -110,12 +110,26 @@ export function clonePalette(palette: Palette): Palette {
     if (color) named[key] = color;
   }
 
-  const custom = Array.isArray(palette.custom)
-    ? palette.custom
-        .map((value) => readColorString(value))
-        .filter((value): value is string => value !== null)
-    : [];
+  // Walk custom and customLabels in parallel, preserving label alignment to
+  // hex entries even when invalid hex values are dropped.
+  const sourceCustom = Array.isArray(palette.custom) ? palette.custom : [];
+  const sourceLabels = Array.isArray(palette.customLabels) ? palette.customLabels : [];
+  const custom: string[] = [];
+  const customLabels: string[] = [];
+  let anyLabel = false;
+  for (let i = 0; i < sourceCustom.length; i++) {
+    const color = readColorString(sourceCustom[i]);
+    if (color === null) continue;
+    custom.push(color);
+    const rawLabel = sourceLabels[i];
+    const label = typeof rawLabel === "string" ? rawLabel.trim() : "";
+    if (label) anyLabel = true;
+    customLabels.push(label);
+  }
 
+  if (anyLabel) {
+    return { named, custom, customLabels };
+  }
   return { named, custom };
 }
 
@@ -161,13 +175,18 @@ export function getPaletteEntries(palette: Palette): PaletteEntry[] {
       hex,
     }));
 
-  const customEntries = palette.custom.map((hex, index) => ({
-    id: `custom:${index}`,
-    kind: "custom" as const,
-    index,
-    label: `Custom ${index + 1}`,
-    hex,
-  }));
+  const customLabels = Array.isArray(palette.customLabels) ? palette.customLabels : [];
+  const customEntries = palette.custom.map((hex, index) => {
+    const rawLabel = customLabels[index];
+    const userLabel = typeof rawLabel === "string" ? rawLabel.trim() : "";
+    return {
+      id: `custom:${index}`,
+      kind: "custom" as const,
+      index,
+      label: userLabel || `Custom ${index + 1}`,
+      hex,
+    };
+  });
 
   return [...namedEntries, ...customEntries];
 }

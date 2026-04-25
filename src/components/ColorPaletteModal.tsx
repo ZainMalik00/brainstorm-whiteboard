@@ -1,6 +1,6 @@
 import { Sketch } from "@uiw/react-color";
-import { Plus, Trash2, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { GripVertical, Plus, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   getPaletteEntries,
   normalizePaletteHex,
@@ -31,8 +31,21 @@ function isSelectedEntry(selection: PaletteSelection | null, entry: PaletteEntry
     : entry.kind === "custom" && selection.index === entry.index;
 }
 
+function generateRandomHex(): string {
+  const value = Math.floor(Math.random() * 0x1000000);
+  return `#${value.toString(16).padStart(6, "0")}`;
+}
+
 function getSuggestedCustomColor(palette: Palette): string {
-  return DEFAULT_CUSTOM_COLOR_CANDIDATES.find((candidate) => !paletteHasHex(palette, candidate)) ?? "#ffffff";
+  const defaultCandidate = DEFAULT_CUSTOM_COLOR_CANDIDATES.find((candidate) => !paletteHasHex(palette, candidate));
+  if (defaultCandidate) return defaultCandidate;
+
+  const MAX_ATTEMPTS = 64;
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    const candidate = generateRandomHex();
+    if (!paletteHasHex(palette, candidate)) return candidate;
+  }
+  return generateRandomHex();
 }
 
 const SM_MIN_WIDTH_QUERY = "(min-width: 640px)";
@@ -60,6 +73,8 @@ export function ColorPaletteModal({ open, onClose }: Props) {
   const removeNamedColor = useWhiteboardStore((s) => s.removeNamedColor);
   const updateCustomColor = useWhiteboardStore((s) => s.updateCustomColor);
   const removeCustomColor = useWhiteboardStore((s) => s.removeCustomColor);
+  const reorderCustomColor = useWhiteboardStore((s) => s.reorderCustomColor);
+  const renameCustomColor = useWhiteboardStore((s) => s.renameCustomColor);
 
   const entries = useMemo(() => getPaletteEntries(palette), [palette]);
   const [selection, setSelection] = useState<PaletteSelection | null>(null);
@@ -71,6 +86,48 @@ export function ColorPaletteModal({ open, onClose }: Props) {
   const [sketchWidth, setSketchWidth] = useState(SKETCH_WIDTH_MAX);
   const [sketchOverlayOpen, setSketchOverlayOpen] = useState(false);
   const isSmUp = useMediaQueryMatches(SM_MIN_WIDTH_QUERY);
+
+  const customItemRefs = useRef<Map<number, HTMLLIElement>>(new Map());
+  const [dragFromIndex, setDragFromIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+
+  const selectedCustomIndex = selection?.kind === "custom" ? selection.index : null;
+  const savedCustomLabel =
+    selectedCustomIndex !== null ? palette.customLabels?.[selectedCustomIndex] ?? "" : "";
+  const [draftName, setDraftName] = useState("");
+
+  useEffect(() => {
+    setDraftName(savedCustomLabel);
+  }, [savedCustomLabel, selectedCustomIndex]);
+
+  const setCustomItemRef = useCallback((index: number, node: HTMLLIElement | null) => {
+    const map = customItemRefs.current;
+    if (node) {
+      map.set(index, node);
+    } else {
+      map.delete(index);
+    }
+  }, []);
+
+  const findClosestCustomIndex = useCallback((clientX: number, clientY: number): number | null => {
+    const map = customItemRefs.current;
+    if (map.size === 0) return null;
+    let bestIndex: number | null = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const [index, node] of map) {
+      const rect = node.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const dx = clientX - cx;
+      const dy = clientY - cy;
+      const dist = dx * dx + dy * dy;
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIndex = index;
+      }
+    }
+    return bestIndex;
+  }, []);
 
   useEffect(() => {
     if (!open) {
@@ -173,6 +230,12 @@ export function ColorPaletteModal({ open, onClose }: Props) {
     updateCustomColor(selection.index, normalizedDraft);
   };
 
+  const commitRename = () => {
+    if (selectedCustomIndex === null) return;
+    if (draftName === savedCustomLabel) return;
+    renameCustomColor(selectedCustomIndex, draftName);
+  };
+
   const onRemove = () => {
     if (!selection) return;
     if (selection.kind === "named") {
@@ -181,6 +244,61 @@ export function ColorPaletteModal({ open, onClose }: Props) {
       removeCustomColor(selection.index);
     }
     setSelection(null);
+  };
+
+  const commitReorder = (fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex) return;
+    reorderCustomColor(fromIndex, toIndex);
+    // Keep custom selection pointing at the same item (or shift others appropriately).
+    setSelection((current) => {
+      if (!current || current.kind !== "custom") return current;
+      const idx = current.index;
+      if (idx === fromIndex) return { kind: "custom", index: toIndex };
+      if (fromIndex < toIndex && idx > fromIndex && idx <= toIndex) {
+        return { kind: "custom", index: idx - 1 };
+      }
+      if (fromIndex > toIndex && idx >= toIndex && idx < fromIndex) {
+        return { kind: "custom", index: idx + 1 };
+      }
+      return current;
+    });
+  };
+
+  const onCustomHandlePointerDown = (event: React.PointerEvent<HTMLElement>, fromIndex: number) => {
+    if (event.button !== undefined && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const handle = event.currentTarget;
+    try {
+      handle.setPointerCapture(event.pointerId);
+    } catch {
+      // ignore: not all environments support pointer capture
+    }
+    setDragFromIndex(fromIndex);
+    setDragOverIndex(fromIndex);
+  };
+
+  const onCustomHandlePointerMove = (event: React.PointerEvent<HTMLElement>) => {
+    if (dragFromIndex === null) return;
+    const next = findClosestCustomIndex(event.clientX, event.clientY);
+    if (next === null) return;
+    setDragOverIndex((prev) => (prev === next ? prev : next));
+  };
+
+  const endDrag = (event: React.PointerEvent<HTMLElement>, commit: boolean) => {
+    const handle = event.currentTarget;
+    try {
+      if (handle.hasPointerCapture(event.pointerId)) {
+        handle.releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      // ignore
+    }
+    if (commit && dragFromIndex !== null && dragOverIndex !== null) {
+      commitReorder(dragFromIndex, dragOverIndex);
+    }
+    setDragFromIndex(null);
+    setDragOverIndex(null);
   };
 
   const backdropDismiss = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -285,8 +403,8 @@ export function ColorPaletteModal({ open, onClose }: Props) {
         */}
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-x-hidden px-3 py-3 sm:gap-5 sm:px-5 sm:py-5 lg:grid lg:grid-cols-[minmax(0,1fr)_22rem] lg:grid-rows-[minmax(0,1fr)] lg:gap-5 lg:overflow-hidden">
           <section className="relative z-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:col-start-1 lg:row-start-1 lg:min-h-0">
-            <div className="mb-2 flex shrink-0 flex-col gap-2 sm:mb-3 sm:gap-3 lg:mb-3 lg:flex-row lg:items-start lg:justify-between">
-              <div className="min-w-0 w-full lg:flex-1">
+            <div className="mb-2 flex shrink-0 flex-row items-start justify-between gap-2 sm:mb-3 sm:gap-3 lg:mb-3">
+              <div className="min-w-0 flex-1">
                 <h3 className="text-sm font-semibold text-slate-800">Available colors</h3>
                 <p className="mt-0.5 text-xs leading-relaxed text-slate-500">
                   Tap a swatch to load it into the picker, or add a new custom color.
@@ -294,44 +412,82 @@ export function ColorPaletteModal({ open, onClose }: Props) {
               </div>
               <button
                 type="button"
-                className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-1.5 rounded-lg border-2 border-slate-300 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 shadow-sm transition hover:bg-slate-50 active:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-500 lg:min-h-9 lg:w-auto lg:border lg:py-2 lg:font-medium"
+                className="inline-flex min-h-9 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm transition hover:bg-slate-50 active:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-500"
                 onClick={onCreateMode}
               >
                 <Plus size={16} aria-hidden />
-                New custom color
+                <span className="max-sm:sr-only">New Custom Color</span>
               </button>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain rounded-xl border border-slate-200 bg-slate-50 p-2">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain rounded-xl border border-slate-200 bg-slate-50 p-2 max-h-[min(60dvh,28rem)] lg:max-h-[min(70dvh,32rem)]">
               {entries.length ? (
                 <ul className="grid list-none grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
                   {entries.map((entry) => {
                     const selected = isSelectedEntry(selection, entry);
+                    const isCustom = entry.kind === "custom";
+                    const isDragging = isCustom && dragFromIndex === entry.index;
+                    const isDropTarget =
+                      isCustom &&
+                      dragFromIndex !== null &&
+                      dragOverIndex === entry.index &&
+                      dragOverIndex !== dragFromIndex;
                     return (
-                      <li key={entry.id} className="min-w-0">
-                        <button
-                          type="button"
-                          aria-pressed={selected}
-                          className={`flex w-full min-h-12 items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-500 ${
+                      <li
+                        key={entry.id}
+                        ref={isCustom ? (node) => setCustomItemRef(entry.index, node) : undefined}
+                        className={`relative min-w-0 transition ${
+                          isDragging ? "opacity-50" : ""
+                        }`}
+                      >
+                        <div
+                          className={`flex w-full min-h-12 items-stretch rounded-lg border transition ${
                             selected
                               ? "border-violet-500 bg-violet-50 text-violet-950 ring-1 ring-violet-500/20"
                               : "border-slate-200 bg-white text-slate-800 hover:border-slate-300 hover:bg-slate-50"
-                          }`}
-                          onClick={() => onSelectEntry(entry)}
+                          } ${isDropTarget ? "ring-2 ring-violet-500 ring-offset-1 ring-offset-slate-50" : ""}`}
                         >
-                          <span
-                            className="h-9 w-9 shrink-0 rounded-md border border-slate-300 shadow-sm"
-                            style={{ backgroundColor: entry.hex }}
-                            aria-hidden="true"
-                          />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm font-medium">{entry.label}</span>
-                            <span className="block truncate font-mono text-xs text-slate-500">{entry.hex}</span>
-                          </span>
-                          <span className="shrink-0 rounded-md bg-slate-100 px-1.5 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide text-slate-600">
-                            {entry.kind === "named" ? "Built-in" : "Custom"}
-                          </span>
-                        </button>
+                          <button
+                            type="button"
+                            aria-pressed={selected}
+                            className="flex min-w-0 flex-1 items-center gap-3 rounded-l-lg px-3 py-2.5 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-500"
+                            onClick={() => onSelectEntry(entry)}
+                          >
+                            <span
+                              className="h-9 w-9 shrink-0 rounded-md border border-slate-300 shadow-sm"
+                              style={{ backgroundColor: entry.hex }}
+                              aria-hidden="true"
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-sm font-medium">{entry.label}</span>
+                              <span className="block truncate font-mono text-xs text-slate-500">{entry.hex}</span>
+                            </span>
+                            {entry.kind === "named" ? (
+                              <span className="shrink-0 rounded-md bg-slate-100 px-1.5 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide text-slate-600">
+                                Built-in
+                              </span>
+                            ) : null}
+                          </button>
+                          {isCustom ? (
+                            <span
+                              role="button"
+                              tabIndex={-1}
+                              aria-label={`Drag to reorder ${entry.label}`}
+                              className="flex w-8 shrink-0 cursor-grab items-center justify-center rounded-r-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 active:cursor-grabbing select-none"
+                              style={{ touchAction: "none" }}
+                              onPointerDown={(event) => onCustomHandlePointerDown(event, entry.index)}
+                              onPointerMove={onCustomHandlePointerMove}
+                              onPointerUp={(event) => endDrag(event, true)}
+                              onPointerCancel={(event) => endDrag(event, false)}
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                              }}
+                            >
+                              <GripVertical size={16} aria-hidden />
+                            </span>
+                          ) : null}
+                        </div>
                       </li>
                     );
                   })}
@@ -344,7 +500,7 @@ export function ColorPaletteModal({ open, onClose }: Props) {
             </div>
           </section>
 
-          <section className="relative z-[1] flex w-full min-w-0 shrink-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4 max-lg:border-t max-lg:border-slate-200 max-lg:pt-4 lg:col-start-2 lg:row-start-1 lg:min-h-0 lg:overflow-y-auto">
+          <section className="relative z-[1] flex w-full min-w-0 shrink-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4 max-lg:border-t max-lg:border-slate-200 max-lg:pt-4 lg:col-start-2 lg:row-start-1 lg:min-h-0 lg:justify-between lg:overflow-y-auto">
             <div className="mb-3 shrink-0 sm:mb-4">
               <h3 className="text-sm font-semibold text-slate-800">
                 {selectedEntry ? `Edit ${selectedEntry.label}` : "Add custom color"}
@@ -359,6 +515,37 @@ export function ColorPaletteModal({ open, onClose }: Props) {
                     : "Open the color picker to choose a color, then add it to your palette."}
               </p>
             </div>
+
+            {selectedCustomIndex !== null ? (
+              <div className="mb-3 shrink-0 sm:mb-4">
+                <label
+                  htmlFor="wb-color-modal-name"
+                  className="block text-xs font-medium text-slate-600"
+                >
+                  Name
+                </label>
+                <input
+                  id="wb-color-modal-name"
+                  type="text"
+                  value={draftName}
+                  maxLength={64}
+                  placeholder={`Custom ${selectedCustomIndex + 1}`}
+                  onChange={(event) => setDraftName(event.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      event.currentTarget.blur();
+                    } else if (event.key === "Escape") {
+                      event.preventDefault();
+                      setDraftName(savedCustomLabel);
+                      event.currentTarget.blur();
+                    }
+                  }}
+                  className="mt-1 block w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm transition placeholder:text-slate-400 focus-visible:border-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-500"
+                />
+              </div>
+            ) : null}
 
             <div className="flex w-full min-w-0 flex-row gap-2 lg:flex-col lg:items-stretch lg:justify-center lg:gap-3">
               {isSmUp ? sketchPicker : null}

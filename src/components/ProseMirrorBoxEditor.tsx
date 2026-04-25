@@ -117,10 +117,26 @@ export function ProseMirrorBoxEditor({ boxId, content, editable, textColor, onCh
     const el = rootRef.current;
     if (!el) return;
 
-    const state = EditorState.create({
-      doc: Node.fromJSON(boardSchema, contentRef.current),
+    const initialDoc = Node.fromJSON(boardSchema, contentRef.current);
+    let state = EditorState.create({
+      doc: initialDoc,
       plugins: buildBoardEditorPlugins(),
     });
+
+    // For freshly-created (empty) boxes, seed storedMarks from session defaults so the
+    // user's first keystrokes inherit the most recently chosen font size / family.
+    if (initialDoc.textContent.length === 0) {
+      const defaults = useWhiteboardStore.getState().lastBoxDefaults;
+      const markType = boardSchema.marks.textStyle;
+      if (markType && (defaults.fontSize || defaults.fontFamily)) {
+        const mark = markType.create({
+          color: null,
+          fontFamily: defaults.fontFamily ?? null,
+          fontSize: defaults.fontSize ?? null,
+        });
+        state = state.apply(state.tr.setStoredMarks([mark]));
+      }
+    }
 
     const view = new EditorView(el, {
       state,

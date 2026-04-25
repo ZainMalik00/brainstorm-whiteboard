@@ -1,4 +1,5 @@
 import {
+  BoxSelect,
   FilePlus,
   FolderOpen,
   ImagePlus,
@@ -23,16 +24,16 @@ export type PreMenuSlotConfig = {
 };
 
 export function buildPreMenuSlotConfig(p: {
-  selectedBoxId: string | null;
+  hasSelection: boolean;
   tool: BoardTool;
   newBoard: () => void;
   onOpenPick: () => void;
   onSave: () => void;
   undo: () => void;
   redo: () => void;
-  addBox: (w: number, h: number) => void;
+  onAddBox: () => void;
   onPickImage: () => void;
-  deleteSelectedBox: () => void;
+  deleteSelectedBoxes: () => void;
   setTool: (t: BoardTool) => void;
 }): PreMenuSlotConfig[] {
   const slots: PreMenuSlotConfig[] = [
@@ -41,16 +42,16 @@ export function buildPreMenuSlotConfig(p: {
     { key: "pre-save", icon: Save, label: "Save board", onClick: () => void p.onSave() },
     { key: "pre-undo", icon: Undo2, label: "Undo", onClick: () => p.undo() },
     { key: "pre-redo", icon: Redo2, label: "Redo", onClick: () => p.redo() },
-    { key: "pre-add-box", icon: SquarePlus, label: "Add box", onClick: () => p.addBox(320, 240) },
+    { key: "pre-add-box", icon: SquarePlus, label: "Add box", onClick: p.onAddBox },
     { key: "pre-add-image", icon: ImagePlus, label: "Add image", onClick: p.onPickImage },
   ];
 
-  if (p.selectedBoxId) {
+  if (p.hasSelection) {
     slots.push({
       key: "pre-delete-box",
       icon: Trash2,
       label: "Delete selected box",
-      onClick: () => p.deleteSelectedBox(),
+      onClick: () => p.deleteSelectedBoxes(),
       className: "text-rose-600 hover:bg-rose-50",
     });
   }
@@ -62,6 +63,13 @@ export function buildPreMenuSlotConfig(p: {
       label: "Select tool",
       active: p.tool === "select",
       onClick: () => p.setTool("select"),
+    },
+    {
+      key: "pre-marquee",
+      icon: BoxSelect,
+      label: "Marquee select tool",
+      active: p.tool === "marquee",
+      onClick: () => p.setTool("marquee"),
     },
     {
       key: "pre-link",
