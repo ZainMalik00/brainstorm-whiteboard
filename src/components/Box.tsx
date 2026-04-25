@@ -186,6 +186,22 @@ export const Box = memo(function Box({ boxId }: Props) {
     setLiveLayout(null);
   }, [multiDrag]);
 
+  const cancelDrag = useCallback(() => {
+    const d = dragRef.current;
+    dragRef.current = null;
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    d?.abortController.abort();
+    try {
+      d?.captureTarget?.releasePointerCapture(d.pointerId);
+    } catch {
+      /* already released */
+    }
+    setLiveLayout(null);
+  }, []);
+
   const onPointerMove = useCallback(
     (e: PointerEvent) => {
       const d = dragRef.current;
