@@ -45,6 +45,24 @@ export function setTextStyle(partial: {
   };
 }
 
+/** Apply (or remove with `null`) the `highlight` mark over the current selection. */
+export function setHighlight(color: string | null): Command {
+  return (state, dispatch) => {
+    const { from, to, empty } = state.selection;
+    const markType = boardSchema.marks.highlight;
+    if (!markType) return false;
+    if (empty) return false;
+    if (dispatch) {
+      let tr = state.tr.removeMark(from, to, markType);
+      if (color) {
+        tr = tr.addMark(from, to, markType.create({ color }));
+      }
+      dispatch(tr.scrollIntoView());
+    }
+    return true;
+  };
+}
+
 export function setTextAlign(textAlign: TextAlign): Command {
   return (state, dispatch) => {
     const { from, to, empty, $from } = state.selection;

@@ -1,11 +1,13 @@
 import { useEffect } from "react";
 import { EditorRegistryProvider } from "./context/EditorRegistryContext";
+import { MultiDragProvider } from "./context/MultiDragContext";
 import { BoardView } from "./components/BoardView";
 import { DevPerfOverlay } from "./components/DevPerfOverlay";
 import { Toolbar } from "./components/toolbar/Toolbar";
-import { parseBoxClipboard } from "./model/boxClipboard";
+import { parseBoxClipboardPayload } from "./model/boxClipboard";
 import { getBoardDocumentTitle } from "./model/boardFileName";
 import { registerImageBlob } from "./persistence/assetStore";
+import { getViewportCenterTopLeft } from "./model/viewportCenter";
 import { useWhiteboardStore } from "./store/whiteboardStore";
 import "./App.css";
 
@@ -35,13 +37,26 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isTypingInRichTextOrForm(e.target)) return;
-
       const mod = e.metaKey || e.ctrlKey;
       const state = useWhiteboardStore.getState();
 
+      // Ctrl/Cmd+D duplicates the selected boxes regardless of focus (pre-empts in-editor handling).
+      if (mod && e.key.toLowerCase() === "d" && state.selectedBoxIds.length > 0) {
+        e.preventDefault();
+        state.duplicateSelectedBoxes();
+        return;
+      }
+
+      if (isTypingInRichTextOrForm(e.target)) return;
+
       if (e.key === "Escape" && state.tool === "link") {
         state.cancelLink();
+        return;
+      }
+
+      if (e.key === "Escape" && state.selectedBoxIds.length > 0) {
+        e.preventDefault();
+        state.clearBoxSelection();
         return;
       }
 
@@ -51,15 +66,21 @@ export default function App() {
         return;
       }
 
-      if ((e.key === "Delete" || e.key === "Backspace") && state.selectedBoxId) {
+      if ((e.key === "Delete" || e.key === "Backspace") && state.selectedBoxIds.length > 0) {
         e.preventDefault();
-        state.deleteSelectedBox();
+        state.deleteSelectedBoxes();
         return;
       }
 
-      if (mod && e.key.toLowerCase() === "c" && state.selectedBoxId) {
+      if (mod && e.key.toLowerCase() === "a") {
         e.preventDefault();
-        void state.copySelectedBox();
+        state.selectAllBoxes();
+        return;
+      }
+
+      if (mod && e.key.toLowerCase() === "c" && state.selectedBoxIds.length > 0) {
+        e.preventDefault();
+        void state.copySelectedBoxes();
       }
     };
 
@@ -71,7 +92,12 @@ export default function App() {
         void (async () => {
           try {
             const asset = await registerImageBlob(imageFile);
-            useWhiteboardStore.getState().addImageBox(asset, 320, 240);
+            const s = useWhiteboardStore.getState();
+            const { x, y } = getViewportCenterTopLeft(s.viewport, s.viewportSize, {
+              width: Math.min(360, asset.width),
+              height: Math.min(240, asset.height),
+            });
+            useWhiteboardStore.getState().addImageBox(asset, x, y);
           } catch (error) {
             window.alert(error instanceof Error ? error.message : "Unable to paste image.");
           }
@@ -80,10 +106,10 @@ export default function App() {
       }
       const text = e.clipboardData?.getData("text/plain");
       if (!text) return;
-      const payload = parseBoxClipboard(text);
-      if (!payload) return;
+      const parsed = parseBoxClipboardPayload(text);
+      if (!parsed) return;
       e.preventDefault();
-      useWhiteboardStore.getState().ingestPastedBox(payload);
+      useWhiteboardStore.getState().ingestPastedBoxes(parsed);
     };
 
     window.addEventListener("keydown", onKeyDown);
@@ -100,15 +126,17 @@ export default function App() {
 
   return (
     <EditorRegistryProvider>
-      <div className="flex h-full flex-col">
-        <div className="flex min-h-0 flex-1 flex-col">
-          <Toolbar />
-          <main className="relative min-h-0 flex-1">
-            <BoardView />
-            <DevPerfOverlay />
-          </main>
+      <MultiDragProvider>
+        <div className="flex h-full flex-col">
+          <div className="flex min-h-0 flex-1 flex-col">
+            <Toolbar />
+            <main className="relative min-h-0 flex-1">
+              <BoardView />
+              <DevPerfOverlay />
+            </main>
+          </div>
         </div>
-      </div>
+      </MultiDragProvider>
     </EditorRegistryProvider>
   );
 }

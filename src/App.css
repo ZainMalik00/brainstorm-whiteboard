@@ -112,3 +112,10 @@
 .ProseMirror li {
   position: relative;
 }
+
+.box-preview mark.wb-highlight,
+.ProseMirror mark.wb-highlight {
+  border-radius: 2px;
+  padding: 0 1px;
+  color: inherit;
+}
