@@ -13,8 +13,10 @@ import type {
   WhiteboardFile,
 } from "../model/types";
 import {
-  serializeBoxForClipboard,
-  type BoxClipboardPayload,
+  serializeBoxesForClipboard,
+  type LinkClipboardEntry,
+  type ParsedBoxClipboard,
+  type SingleBoxClipboardEntry,
 } from "../model/boxClipboard";
 import {
   createBoxAt,
@@ -25,8 +27,22 @@ import {
 import { getDefaultLinkStyle, getNamedPaletteColor, normalizePaletteHex, paletteHasHex } from "../model/palette";
 
 const MAX_UNDO = 50;
+const DUPLICATE_OFFSET = 24;
 
-export type BoardTool = "select" | "link";
+export type BoardTool = "select" | "marquee" | "link";
+
+export type LastBoxDefaults = {
+  fill?: string;
+  stroke?: string;
+  textColor?: string;
+  fontSize?: string;
+  fontFamily?: string;
+};
+
+export type ViewportSize = {
+  width: number;
+  height: number;
+};
 
 type CoreSnapshot = Pick<
   WhiteboardRuntime,
@@ -55,8 +71,19 @@ function maxZIndex(boxesById: Record<string, Box>): number {
   return m;
 }
 
+function uniqueIds(ids: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 export interface WhiteboardState extends WhiteboardRuntime {
-  selectedBoxId: string | null;
+  selectedBoxIds: string[];
   selectedLinkId: string | null;
   tool: BoardTool;
   /** When tool === "link", first clicked box id */
@@ -66,6 +93,10 @@ export interface WhiteboardState extends WhiteboardRuntime {
   lastSavedCoreJson: string;
   past: string[];
   future: string[];
+  /** Last-applied per-style values, used as defaults for newly added boxes (session-scoped). */
+  lastBoxDefaults: LastBoxDefaults;
+  /** Live viewport DOM size, kept up to date by BoardView; used for "add box at viewport center". */
+  viewportSize: ViewportSize;
 }
 
 type WhiteboardActions = {
@@ -83,9 +114,13 @@ type WhiteboardActions = {
   addBox: (x: number, y: number) => void;
   addImageBox: (asset: ImageAsset, x: number, y: number) => void;
   upsertAsset: (asset: ImageAsset) => void;
-  deleteSelectedBox: () => void;
+  deleteSelectedBoxes: () => void;
   deleteSelectedLink: () => void;
-  selectBox: (id: string | null) => void;
+  selectBoxes: (ids: readonly string[]) => void;
+  toggleBoxInSelection: (id: string) => void;
+  addBoxesToSelection: (ids: readonly string[]) => void;
+  clearBoxSelection: () => void;
+  selectAllBoxes: () => void;
   selectLink: (id: string | null) => void;
   setTool: (tool: BoardTool) => void;
   setLinkSource: (id: string | null) => void;
@@ -93,31 +128,38 @@ type WhiteboardActions = {
   cancelLink: () => void;
   updateBoxContent: (id: string, content: ProseMirrorDocJSON) => void;
   commitBoxPosition: (id: string, x: number, y: number) => void;
+  commitMultiBoxPositions: (deltas: ReadonlyArray<{ id: string; x: number; y: number }>) => void;
   commitBoxSize: (id: string, x: number, y: number, width: number, height: number) => void;
   setViewport: (v: Viewport) => void;
+  setViewportSize: (size: ViewportSize) => void;
   bringToFront: (id: string) => void;
   sendToBack: (id: string) => void;
   bringForward: (id: string) => void;
   sendBackward: (id: string) => void;
   updateBoxStyle: (id: string, style: Partial<Box["style"]>) => void;
+  updateBoxStyles: (ids: readonly string[], style: Partial<Box["style"]>) => void;
   updateBoxLabel: (id: string, label: string | undefined) => void;
+  recordLastTextStyle: (style: { fontSize?: string; fontFamily?: string }) => void;
   addCustomColor: (hex: string) => void;
   setNamedColor: (key: string, hex: string) => void;
   removeNamedColor: (key: string) => void;
   updateCustomColor: (index: number, hex: string) => void;
   removeCustomColor: (index: number) => void;
+  reorderCustomColor: (fromIndex: number, toIndex: number) => void;
+  renameCustomColor: (index: number, label: string) => void;
   addLink: (fromBoxId: string, toBoxId: string) => void;
   updateLinkLabel: (id: string, label: string | undefined) => void;
   updateLinkStyle: (id: string, style: Partial<LinkStyle>) => void;
-  copySelectedBox: () => Promise<boolean>;
-  ingestPastedBox: (payload: BoxClipboardPayload) => void;
+  copySelectedBoxes: () => Promise<boolean>;
+  ingestPastedBoxes: (payload: ParsedBoxClipboard) => void;
+  duplicateSelectedBoxes: () => void;
 };
 
 const initialRuntime = createEmptyRuntime();
 
 const initialState: WhiteboardState = {
   ...initialRuntime,
-  selectedBoxId: null,
+  selectedBoxIds: [],
   selectedLinkId: null,
   tool: "select",
   linkSourceId: null,
@@ -125,6 +167,8 @@ const initialState: WhiteboardState = {
   lastSavedCoreJson: snapshotCore(initialRuntime),
   past: [],
   future: [],
+  lastBoxDefaults: {},
+  viewportSize: { width: 0, height: 0 },
 };
 
 function applyCore(s: WhiteboardState, core: CoreSnapshot): void {
@@ -135,6 +179,7 @@ function applyCore(s: WhiteboardState, core: CoreSnapshot): void {
   s.links = core.links;
   s.linkIdsByBoxId = buildLinkIdsByBoxId(core.links);
 }
+
 
 export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
   immer((set, get) => ({
@@ -155,7 +200,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
         const prev = s.past.pop()!;
         s.future.unshift(current);
         applyCore(s, parseCore(prev));
-        s.selectedBoxId = null;
+        s.selectedBoxIds = [];
         s.selectedLinkId = null;
         s.linkSourceId = null;
       }),
@@ -167,7 +212,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
         const next = s.future.shift()!;
         s.past.push(current);
         applyCore(s, parseCore(next));
-        s.selectedBoxId = null;
+        s.selectedBoxIds = [];
         s.selectedLinkId = null;
         s.linkSourceId = null;
       }),
@@ -178,7 +223,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
       clearAssetStore();
       set((s) => {
         applyCore(s, rt);
-        s.selectedBoxId = null;
+        s.selectedBoxIds = [];
         s.selectedLinkId = null;
         s.tool = "select";
         s.linkSourceId = null;
@@ -186,6 +231,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
         s.past = [];
         s.future = [];
         s.lastSavedCoreJson = snapshotCore(s);
+        s.lastBoxDefaults = {};
       });
     },
 
@@ -193,7 +239,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
       const rt = runtimeFromFile(file);
       set((s) => {
         applyCore(s, rt);
-        s.selectedBoxId = null;
+        s.selectedBoxIds = [];
         s.selectedLinkId = null;
         s.tool = "select";
         s.linkSourceId = null;
@@ -201,6 +247,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
         s.past = [];
         s.future = [];
         s.lastSavedCoreJson = snapshotCore(s);
+        s.lastBoxDefaults = {};
       });
     },
 
@@ -209,7 +256,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
       clearAssetStore();
       set((s) => {
         applyCore(s, rt);
-        s.selectedBoxId = null;
+        s.selectedBoxIds = [];
         s.selectedLinkId = null;
         s.tool = "select";
         s.linkSourceId = null;
@@ -217,6 +264,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
         s.past = [];
         s.future = [];
         s.lastSavedCoreJson = snapshotCore(s);
+        s.lastBoxDefaults = {};
       });
     },
 
@@ -252,9 +300,9 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
       get().pushSnapshot();
       set((s) => {
         const z = maxZIndex(s.boxesById) + 1;
-        const box = createBoxAt(x, y, z, s.palette);
+        const box = createBoxAt(x, y, z, s.palette, s.lastBoxDefaults);
         s.boxesById[box.id] = box;
-        s.selectedBoxId = box.id;
+        s.selectedBoxIds = [box.id];
         s.selectedLinkId = null;
       });
     },
@@ -264,9 +312,9 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
       set((s) => {
         s.assetsById[asset.id] = asset;
         const z = maxZIndex(s.boxesById) + 1;
-        const box = createImageBoxAt(x, y, z, asset, s.palette);
+        const box = createImageBoxAt(x, y, z, asset, s.palette, s.lastBoxDefaults);
         s.boxesById[box.id] = box;
-        s.selectedBoxId = box.id;
+        s.selectedBoxIds = [box.id];
         s.selectedLinkId = null;
         s.tool = "select";
         s.linkSourceId = null;
@@ -278,15 +326,18 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
         s.assetsById[asset.id] = asset;
       }),
 
-    deleteSelectedBox: () => {
+    deleteSelectedBoxes: () => {
+      const ids = get().selectedBoxIds;
+      if (ids.length === 0) return;
       get().pushSnapshot();
       set((s) => {
-        const id = s.selectedBoxId;
-        if (!id || !s.boxesById[id]) return;
-        delete s.boxesById[id];
-        s.links = s.links.filter((l) => l.fromBoxId !== id && l.toBoxId !== id);
+        const idSet = new Set(s.selectedBoxIds);
+        for (const id of idSet) {
+          delete s.boxesById[id];
+        }
+        s.links = s.links.filter((l) => !idSet.has(l.fromBoxId) && !idSet.has(l.toBoxId));
         s.linkIdsByBoxId = buildLinkIdsByBoxId(s.links);
-        s.selectedBoxId = null;
+        s.selectedBoxIds = [];
       });
     },
 
@@ -301,17 +352,68 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
       });
     },
 
-    selectBox: (id) =>
+    selectBoxes: (ids) =>
       set((s) => {
-        s.selectedBoxId = id;
-        if (id) s.selectedLinkId = null;
+        const next = uniqueIds(ids).filter((id) => !!s.boxesById[id]);
+        s.selectedBoxIds = next;
+        if (next.length > 0) s.selectedLinkId = null;
+        // When a single box is selected, adopt its style as the "last applied" defaults so a
+        // subsequent "Add box" inherits the look the user just chose. Multi-select is ambiguous;
+        // skip recording in that case.
+        if (next.length === 1) {
+          const b = s.boxesById[next[0]];
+          if (b) {
+            s.lastBoxDefaults.fill = b.style.fill;
+            s.lastBoxDefaults.stroke = b.style.stroke;
+            if (b.kind === "text" && b.style.textColor) {
+              s.lastBoxDefaults.textColor = b.style.textColor;
+            }
+          }
+        }
+      }),
+
+    toggleBoxInSelection: (id) =>
+      set((s) => {
+        if (!s.boxesById[id]) return;
+        const idx = s.selectedBoxIds.indexOf(id);
+        if (idx === -1) {
+          s.selectedBoxIds.push(id);
+          s.selectedLinkId = null;
+        } else {
+          s.selectedBoxIds.splice(idx, 1);
+        }
+      }),
+
+    addBoxesToSelection: (ids) =>
+      set((s) => {
+        const seen = new Set(s.selectedBoxIds);
+        let added = false;
+        for (const id of ids) {
+          if (!s.boxesById[id]) continue;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          s.selectedBoxIds.push(id);
+          added = true;
+        }
+        if (added) s.selectedLinkId = null;
+      }),
+
+    clearBoxSelection: () =>
+      set((s) => {
+        s.selectedBoxIds = [];
+      }),
+
+    selectAllBoxes: () =>
+      set((s) => {
+        s.selectedBoxIds = Object.keys(s.boxesById);
+        if (s.selectedBoxIds.length > 0) s.selectedLinkId = null;
       }),
 
     selectLink: (id) =>
       set((s) => {
         s.selectedLinkId = id;
         if (id) {
-          s.selectedBoxId = null;
+          s.selectedBoxIds = [];
           s.linkSourceId = null;
         }
       }),
@@ -320,7 +422,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
       set((s) => {
         s.tool = tool;
         if (tool === "link") {
-          s.linkSourceId = s.selectedBoxId;
+          s.linkSourceId = s.selectedBoxIds[0] ?? null;
         } else {
           s.linkSourceId = null;
         }
@@ -382,6 +484,19 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
       });
     },
 
+    commitMultiBoxPositions: (deltas) => {
+      if (deltas.length === 0) return;
+      get().pushSnapshot();
+      set((s) => {
+        for (const { id, x, y } of deltas) {
+          const b = s.boxesById[id];
+          if (!b) continue;
+          b.x = x;
+          b.y = y;
+        }
+      });
+    },
+
     commitBoxSize: (id, x, y, width, height) => {
       get().pushSnapshot();
       set((s) => {
@@ -400,6 +515,12 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
         s.viewport = { ...v };
       });
     },
+
+    setViewportSize: (size) =>
+      set((s) => {
+        if (s.viewportSize.width === size.width && s.viewportSize.height === size.height) return;
+        s.viewportSize = { ...size };
+      }),
 
     bringToFront: (id) => {
       get().pushSnapshot();
@@ -456,6 +577,23 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
       set((s) => {
         const b = s.boxesById[id];
         if (b) Object.assign(b.style, style);
+        if (style.fill !== undefined) s.lastBoxDefaults.fill = style.fill;
+        if (style.stroke !== undefined) s.lastBoxDefaults.stroke = style.stroke;
+        if (style.textColor !== undefined) s.lastBoxDefaults.textColor = style.textColor;
+      });
+    },
+
+    updateBoxStyles: (ids, style) => {
+      if (ids.length === 0) return;
+      get().pushSnapshot();
+      set((s) => {
+        for (const id of ids) {
+          const b = s.boxesById[id];
+          if (b) Object.assign(b.style, style);
+        }
+        if (style.fill !== undefined) s.lastBoxDefaults.fill = style.fill;
+        if (style.stroke !== undefined) s.lastBoxDefaults.stroke = style.stroke;
+        if (style.textColor !== undefined) s.lastBoxDefaults.textColor = style.textColor;
       });
     },
 
@@ -472,6 +610,12 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
       });
     },
 
+    recordLastTextStyle: (style) =>
+      set((s) => {
+        if (style.fontSize !== undefined) s.lastBoxDefaults.fontSize = style.fontSize;
+        if (style.fontFamily !== undefined) s.lastBoxDefaults.fontFamily = style.fontFamily;
+      }),
+
     addCustomColor: (hex) => {
       const normalized = normalizePaletteHex(hex);
       if (!normalized) return;
@@ -479,6 +623,7 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
       get().pushSnapshot();
       set((s) => {
         s.palette.custom.push(normalized);
+        if (s.palette.customLabels) s.palette.customLabels.push("");
       });
     },
 
@@ -524,6 +669,57 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
       set((s) => {
         if (!s.palette.custom[index]) return;
         s.palette.custom.splice(index, 1);
+        if (s.palette.customLabels) {
+          s.palette.customLabels.splice(index, 1);
+          if (s.palette.customLabels.every((label) => !label)) {
+            delete s.palette.customLabels;
+          }
+        }
+      });
+    },
+
+    reorderCustomColor: (fromIndex, toIndex) => {
+      const state = get();
+      const list = state.palette.custom;
+      if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex)) return;
+      if (fromIndex < 0 || fromIndex >= list.length) return;
+      if (toIndex < 0 || toIndex >= list.length) return;
+      if (fromIndex === toIndex) return;
+      state.pushSnapshot();
+      set((s) => {
+        const arr = s.palette.custom;
+        if (fromIndex >= arr.length || toIndex >= arr.length) return;
+        const [moved] = arr.splice(fromIndex, 1);
+        arr.splice(toIndex, 0, moved);
+        const labels = s.palette.customLabels;
+        if (labels && fromIndex < labels.length && toIndex < labels.length) {
+          const [movedLabel] = labels.splice(fromIndex, 1);
+          labels.splice(toIndex, 0, movedLabel);
+        }
+      });
+    },
+
+    renameCustomColor: (index, label) => {
+      const state = get();
+      if (!Number.isInteger(index) || index < 0) return;
+      if (!state.palette.custom[index]) return;
+      const trimmed = typeof label === "string" ? label.trim().slice(0, 64) : "";
+      const existing = state.palette.customLabels?.[index] ?? "";
+      if (existing === trimmed) return;
+      state.pushSnapshot();
+      set((s) => {
+        if (!s.palette.custom[index]) return;
+        if (!s.palette.customLabels) {
+          s.palette.customLabels = s.palette.custom.map(() => "");
+        }
+        // Ensure parallel length even if labels array drifted.
+        while (s.palette.customLabels.length < s.palette.custom.length) {
+          s.palette.customLabels.push("");
+        }
+        s.palette.customLabels[index] = trimmed;
+        if (s.palette.customLabels.every((value) => !value)) {
+          delete s.palette.customLabels;
+        }
       });
     },
 
@@ -570,70 +766,176 @@ export const useWhiteboardStore = create<WhiteboardState & WhiteboardActions>()(
       });
     },
 
-    copySelectedBox: async () => {
+    copySelectedBoxes: async () => {
       const s = get();
-      const id = s.selectedBoxId;
-      if (!id) return false;
-      const b = s.boxesById[id];
-      if (!b) return false;
+      const ids = s.selectedBoxIds;
+      if (ids.length === 0) return false;
+      const idSet = new Set(ids);
+      const boxes: Box[] = [];
+      const assets: ImageAsset[] = [];
+      for (const id of ids) {
+        const b = s.boxesById[id];
+        if (!b) continue;
+        boxes.push(b);
+        if (b.kind === "image") {
+          const asset = s.assetsById[b.assetId];
+          if (asset) assets.push(asset);
+        }
+      }
+      if (boxes.length === 0) return false;
+      // Only links whose BOTH endpoints are in the selection are copied; dangling links are dropped.
+      const incidentLinks = s.links.filter(
+        (l) => idSet.has(l.fromBoxId) && idSet.has(l.toBoxId),
+      );
       try {
-        const asset = b.kind === "image" ? s.assetsById[b.assetId] : undefined;
-        await navigator.clipboard.writeText(serializeBoxForClipboard(b, asset));
+        await navigator.clipboard.writeText(
+          serializeBoxesForClipboard(boxes, assets, incidentLinks),
+        );
         return true;
       } catch {
         return false;
       }
     },
 
-    ingestPastedBox: (payload) => {
-      const OFFSET = 24;
+    ingestPastedBoxes: (payload) => {
+      const { boxes: entries, links: linkEntries } = payload;
+      if (entries.length === 0) return;
       get().pushSnapshot();
       set((s) => {
-        const newId = crypto.randomUUID();
-        const z = maxZIndex(s.boxesById) + 1;
-        const common = {
-          id: newId,
-          x: payload.x + OFFSET,
-          y: payload.y + OFFSET,
-          width: payload.width,
-          height: payload.height,
-          zIndex: z,
-          style: {
-            ...payload.style,
-            ...(payload.kind === "text" && !payload.style.textColor
-              ? { textColor: getNamedPaletteColor(s.palette, "text") }
-              : {}),
-          },
-        };
-        const box: Box =
-          payload.kind === "image"
-            ? {
-                ...common,
-                kind: "image",
-                assetId: payload.asset.id,
-                ...(payload.alt ? { alt: payload.alt } : {}),
-              }
-            : {
-                ...common,
-                kind: "text",
-                content: structuredClone(payload.content),
-              };
-        if (payload.kind === "image") {
-          s.assetsById[payload.asset.id] = payload.asset;
+        const z0 = maxZIndex(s.boxesById);
+        const newIds: string[] = [];
+        entries.forEach((entry, i) => {
+          const newId = crypto.randomUUID();
+          const z = z0 + 1 + i;
+          const common = {
+            id: newId,
+            x: entry.x + DUPLICATE_OFFSET,
+            y: entry.y + DUPLICATE_OFFSET,
+            width: entry.width,
+            height: entry.height,
+            zIndex: z,
+            style: {
+              ...entry.style,
+              ...(entry.kind === "text" && !entry.style.textColor
+                ? { textColor: getNamedPaletteColor(s.palette, "text") }
+                : {}),
+            },
+          };
+          const box: Box =
+            entry.kind === "image"
+              ? {
+                  ...common,
+                  kind: "image",
+                  assetId: entry.asset.id,
+                  ...(entry.alt ? { alt: entry.alt } : {}),
+                }
+              : {
+                  ...common,
+                  kind: "text",
+                  content: structuredClone(entry.content),
+                };
+          if (entry.kind === "image") {
+            s.assetsById[entry.asset.id] = entry.asset;
+          }
+          if (entry.label !== undefined && entry.label !== "") {
+            box.label = entry.label;
+          }
+          s.boxesById[newId] = box;
+          newIds.push(newId);
+        });
+        // Recreate links between the freshly inserted boxes (mapped via array index).
+        let linksAdded = false;
+        for (const link of linkEntries) {
+          const fromBoxId = newIds[link.fromIdx];
+          const toBoxId = newIds[link.toIdx];
+          if (!fromBoxId || !toBoxId || fromBoxId === toBoxId) continue;
+          s.links.push({
+            id: crypto.randomUUID(),
+            fromBoxId,
+            toBoxId,
+            style: { ...link.style },
+            ...(link.label !== undefined && link.label !== "" ? { label: link.label } : {}),
+            ...(link.labelStyle ? { labelStyle: { ...link.labelStyle } } : {}),
+            ...(link.labelOffset ? { labelOffset: { ...link.labelOffset } } : {}),
+          });
+          linksAdded = true;
         }
-        if (payload.label !== undefined && payload.label !== "") {
-          box.label = payload.label;
+        if (linksAdded) {
+          s.linkIdsByBoxId = buildLinkIdsByBoxId(s.links);
         }
-        s.boxesById[newId] = box;
-        s.selectedBoxId = newId;
+        s.selectedBoxIds = newIds;
         s.selectedLinkId = null;
         s.tool = "select";
         s.linkSourceId = null;
       });
+    },
+
+    duplicateSelectedBoxes: () => {
+      const s = get();
+      const ids = s.selectedBoxIds;
+      if (ids.length === 0) return;
+      const idSet = new Set(ids);
+      const entries: SingleBoxClipboardEntry[] = [];
+      const idxByOldId = new Map<string, number>();
+      for (const id of ids) {
+        const b = s.boxesById[id];
+        if (!b) continue;
+        idxByOldId.set(id, entries.length);
+        const base = {
+          x: b.x,
+          y: b.y,
+          width: b.width,
+          height: b.height,
+          style: { ...b.style },
+          ...(b.label !== undefined && b.label !== "" ? { label: b.label } : {}),
+        };
+        if (b.kind === "image") {
+          const asset = s.assetsById[b.assetId] ?? {
+            id: b.assetId,
+            mimeType: "image/png",
+            width: b.width,
+            height: b.height,
+          };
+          entries.push({
+            ...base,
+            kind: "image",
+            asset,
+            ...(b.alt ? { alt: b.alt } : {}),
+          });
+        } else {
+          entries.push({
+            ...base,
+            kind: "text",
+            content: structuredClone(b.content),
+          });
+        }
+      }
+      const linkEntries: LinkClipboardEntry[] = [];
+      for (const link of s.links) {
+        if (!idSet.has(link.fromBoxId) || !idSet.has(link.toBoxId)) continue;
+        const fromIdx = idxByOldId.get(link.fromBoxId);
+        const toIdx = idxByOldId.get(link.toBoxId);
+        if (fromIdx === undefined || toIdx === undefined) continue;
+        linkEntries.push({
+          fromIdx,
+          toIdx,
+          style: { ...link.style },
+          ...(link.label !== undefined && link.label !== "" ? { label: link.label } : {}),
+          ...(link.labelStyle ? { labelStyle: { ...link.labelStyle } } : {}),
+          ...(link.labelOffset ? { labelOffset: { ...link.labelOffset } } : {}),
+        });
+      }
+      get().ingestPastedBoxes({ boxes: entries, links: linkEntries });
     },
   })),
 );
 
 export function getEmptyFileJson(): string {
   return stringifyWhiteboardFile(createEmptyWhiteboardFile());
+}
+
+/** Convenience helper: returns the "primary" selection id (last one added), or null. */
+export function getPrimarySelectedBoxId(s: Pick<WhiteboardState, "selectedBoxIds">): string | null {
+  const ids = s.selectedBoxIds;
+  return ids.length > 0 ? ids[ids.length - 1] : null;
 }

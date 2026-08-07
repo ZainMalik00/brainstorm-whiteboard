@@ -2,11 +2,14 @@ import {
   Bold,
   BringToFront,
   ChevronDown,
+  Eraser,
+  Highlighter,
   Italic,
   Menu,
   MoveDown,
   MoveUp,
   PaintBucket,
+  Palette,
   Plus,
   SendToBack,
   TextAlignCenter,
@@ -30,10 +33,11 @@ import { toggleMark } from "prosemirror-commands";
 import type { EditorView } from "prosemirror-view";
 import { boardSchema } from "../../editor/schema";
 import { toBoardBundleFileName } from "../../model/boardFileName";
-import { setTextAlign, setTextStyle, type TextAlign } from "../../editor/textStyle";
+import { setHighlight, setTextAlign, setTextStyle, type TextAlign } from "../../editor/textStyle";
 import { useEditorRegistry } from "../../context/EditorRegistryContext";
 import { getPaletteEntries } from "../../model/palette";
-import { useWhiteboardStore } from "../../store/whiteboardStore";
+import { getViewportCenterTopLeft } from "../../model/viewportCenter";
+import { getPrimarySelectedBoxId, useWhiteboardStore } from "../../store/whiteboardStore";
 import { registerImageBlob, replaceAssetStore } from "../../persistence/assetStore";
 import { downloadBoardBundle, readBoardFile } from "../../persistence/fileIo";
 import { ColorPaletteModal } from "../ColorPaletteModal";
@@ -79,8 +83,6 @@ const ICON_BUTTON_BASE =
 const ICON_BUTTON_ACTIVE = "border-violet-400 bg-violet-100 text-violet-700";
 const SWATCH_BUTTON_CLASS =
   "h-6 w-6 rounded border border-slate-400 shadow-sm transition hover:scale-105 focus:outline-none focus:ring-2 focus:ring-violet-500/25";
-const SMALL_SWATCH_BUTTON_CLASS =
-  "h-4 w-4 rounded border border-slate-400 shadow-sm transition hover:scale-110 focus:outline-none focus:ring-2 focus:ring-violet-500/25";
 const ICON_SIZE = 16;
 const TOOLBAR_OVERFLOW_ID = "wb-toolbar-overflow";
 const LG_MIN_WIDTH_MEDIA = "(min-width: 64rem)";
@@ -183,6 +185,112 @@ function IconButton({ icon: Icon, label, onClick, active = false, className = ""
   );
 }
 
+type SwatchEntry = { id: string; label: string; hex: string };
+
+type SwatchDropdownProps = {
+  ariaLabel: string;
+  title: string;
+  icon: LucideIcon;
+  /** Solid color shown as an underline indicator on the trigger button. */
+  indicatorColor?: string;
+  swatches: ReadonlyArray<SwatchEntry>;
+  onPick: (hex: string) => void;
+  onClear?: () => void;
+  clearLabel?: string;
+};
+
+const SWATCH_DROPDOWN_TRIGGER_CLASS =
+  "inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-800 shadow-sm outline-none transition hover:bg-slate-50 focus:border-violet-400 focus:ring-2 focus:ring-violet-500/25";
+const SWATCH_GRID_BUTTON_CLASS =
+  "h-6 w-6 rounded border border-slate-300 shadow-sm transition hover:scale-110 hover:border-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500/25";
+
+function SwatchDropdown({
+  ariaLabel,
+  title,
+  icon: Icon,
+  indicatorColor,
+  swatches,
+  onPick,
+  onClear,
+  clearLabel,
+}: SwatchDropdownProps) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useDismissOnOutsidePointer({
+    open,
+    containerRef,
+    onClose: () => setOpen(false),
+  });
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button
+        type="button"
+        aria-label={ariaLabel}
+        title={title}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={SWATCH_DROPDOWN_TRIGGER_CLASS}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span
+          className="inline-flex flex-col items-center justify-center gap-[2px] leading-none"
+          aria-hidden="true"
+        >
+          <Icon size={ICON_SIZE} />
+          <span
+            className={`block h-[3px] w-4 rounded-sm ${
+              indicatorColor ? "" : "border border-dashed border-slate-300"
+            }`}
+            style={indicatorColor ? { background: indicatorColor } : undefined}
+          />
+        </span>
+        <ChevronDown size={14} className="text-slate-500" />
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          aria-label={ariaLabel}
+          className="absolute right-0 top-full z-20 mt-1 w-max rounded-md border border-slate-200 bg-white p-2 shadow-lg"
+        >
+          <div className="grid grid-cols-4 justify-items-center gap-1">
+            {swatches.map(({ id, label, hex }) => (
+              <button
+                key={id}
+                type="button"
+                role="menuitem"
+                className={SWATCH_GRID_BUTTON_CLASS}
+                style={{ background: hex }}
+                aria-label={`${ariaLabel}: ${hex}`}
+                title={`${label}: ${hex}`}
+                onClick={() => {
+                  onPick(hex);
+                  setOpen(false);
+                }}
+              />
+            ))}
+          </div>
+          {onClear ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-500/25"
+              onClick={() => {
+                onClear();
+                setOpen(false);
+              }}
+            >
+              <Eraser size={14} />
+              {clearLabel ?? "Clear"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function Toolbar() {
   const boardFileInputRef = useRef<HTMLInputElement>(null);
   const imageFileInputRef = useRef<HTMLInputElement>(null);
@@ -206,12 +314,12 @@ export function Toolbar() {
   const [isToolbarOverflowOpen, setIsToolbarOverflowOpen] = useState(false);
 
   const {
-    selectedBoxId,
+    selectedBoxIds,
     selectedLinkId,
     tool,
     palette,
     boardFileName,
-    selectedBox,
+    primarySelectedBox,
     selectedLink,
     newBoard,
     exportFile,
@@ -220,72 +328,82 @@ export function Toolbar() {
     undo,
     redo,
     addBox,
+    addImageBox,
     setTool,
     bringToFront,
     sendToBack,
     bringForward,
     sendBackward,
-    deleteSelectedBox,
+    deleteSelectedBoxes,
     deleteSelectedLink,
-    updateBoxStyle,
+    updateBoxStyles,
     updateBoxLabel,
     updateLinkLabel,
+    recordLastTextStyle,
   } = useWhiteboardStore(
-    useShallow((s) => ({
-      selectedBoxId: s.selectedBoxId,
-      selectedLinkId: s.selectedLinkId,
-      tool: s.tool,
-      palette: s.palette,
-      boardFileName: s.boardFileName,
-      selectedBox: s.selectedBoxId ? s.boxesById[s.selectedBoxId] : undefined,
-      selectedLink: s.selectedLinkId ? s.links.find((link) => link.id === s.selectedLinkId) : undefined,
-      newBoard: s.newBoard,
-      exportFile: s.exportFile,
-      setBoardFileName: s.setBoardFileName,
-      markBoardSaved: s.markBoardSaved,
-      undo: s.undo,
-      redo: s.redo,
-      addBox: s.addBox,
-      setTool: s.setTool,
-      bringToFront: s.bringToFront,
-      sendToBack: s.sendToBack,
-      bringForward: s.bringForward,
-      sendBackward: s.sendBackward,
-      deleteSelectedBox: s.deleteSelectedBox,
-      deleteSelectedLink: s.deleteSelectedLink,
-      updateBoxStyle: s.updateBoxStyle,
-      updateBoxLabel: s.updateBoxLabel,
-      updateLinkLabel: s.updateLinkLabel,
-    })),
+    useShallow((s) => {
+      const primaryId = getPrimarySelectedBoxId(s);
+      return {
+        selectedBoxIds: s.selectedBoxIds,
+        selectedLinkId: s.selectedLinkId,
+        tool: s.tool,
+        palette: s.palette,
+        boardFileName: s.boardFileName,
+        primarySelectedBox: primaryId ? s.boxesById[primaryId] : undefined,
+        selectedLink: s.selectedLinkId ? s.links.find((link) => link.id === s.selectedLinkId) : undefined,
+        newBoard: s.newBoard,
+        exportFile: s.exportFile,
+        setBoardFileName: s.setBoardFileName,
+        markBoardSaved: s.markBoardSaved,
+        undo: s.undo,
+        redo: s.redo,
+        addBox: s.addBox,
+        addImageBox: s.addImageBox,
+        setTool: s.setTool,
+        bringToFront: s.bringToFront,
+        sendToBack: s.sendToBack,
+        bringForward: s.bringForward,
+        sendBackward: s.sendBackward,
+        deleteSelectedBoxes: s.deleteSelectedBoxes,
+        deleteSelectedLink: s.deleteSelectedLink,
+        updateBoxStyles: s.updateBoxStyles,
+        updateBoxLabel: s.updateBoxLabel,
+        updateLinkLabel: s.updateLinkLabel,
+        recordLastTextStyle: s.recordLastTextStyle,
+      };
+    }),
   );
 
-  const isTextBoxSelected = selectedBox?.kind === "text";
+  const hasSelection = selectedBoxIds.length > 0;
+  const isSingleSelection = selectedBoxIds.length === 1;
+  const primarySelectedBoxId = isSingleSelection ? selectedBoxIds[0] : null;
+  const isTextBoxSelected = isSingleSelection && primarySelectedBox?.kind === "text";
 
   const runOnEditor = useCallback(
     (fn: (view: NonNullable<ReturnType<typeof getView>>) => void) => {
-      if (!selectedBoxId || selectedBox?.kind !== "text") return;
-      const v = getView(selectedBoxId);
+      if (!primarySelectedBoxId || primarySelectedBox?.kind !== "text") return;
+      const v = getView(primarySelectedBoxId);
       if (v) fn(v);
     },
-    [getView, selectedBox, selectedBoxId],
+    [getView, primarySelectedBox, primarySelectedBoxId],
   );
 
   const selectionFontSize = useSyncExternalStore(
     subscribe,
-    () => getSelectionTextStyleAttr(getView(selectedBoxId), "fontSize"),
+    () => getSelectionTextStyleAttr(getView(primarySelectedBoxId), "fontSize"),
     () => "",
   );
 
   const applyFontSize = useCallback(
     (rawValue: string) => {
       const normalized = normalizeFontSizeInput(rawValue);
-      if (!normalized || !selectedBoxId || selectedBox?.kind !== "text") {
+      if (!normalized || !primarySelectedBoxId || primarySelectedBox?.kind !== "text") {
         setIsEditingFontSize(false);
         setFontSizeInput(selectionFontSize);
         return false;
       }
 
-      const view = getView(selectedBoxId);
+      const view = getView(primarySelectedBoxId);
       if (!view) {
         setIsEditingFontSize(false);
         setFontSizeInput(selectionFontSize);
@@ -299,13 +417,20 @@ export function Toolbar() {
         return false;
       }
 
+      recordLastTextStyle({ fontSize: normalized });
       setFontSizeInput(normalized);
       setIsEditingFontSize(false);
       setIsFontSizeMenuOpen(false);
       view.focus();
       return true;
     },
-    [getView, selectedBox?.kind, selectedBoxId, selectionFontSize],
+    [
+      getView,
+      primarySelectedBox?.kind,
+      primarySelectedBoxId,
+      recordLastTextStyle,
+      selectionFontSize,
+    ],
   );
 
   const onSave = useCallback(async () => {
@@ -349,6 +474,12 @@ export function Toolbar() {
   }, [flushAllEditorsToStore]);
   const onPickImage = useCallback(() => imageFileInputRef.current?.click(), []);
 
+  const onAddBox = useCallback(() => {
+    const s = useWhiteboardStore.getState();
+    const { x, y } = getViewportCenterTopLeft(s.viewport, s.viewportSize, { width: 280, height: 160 });
+    addBox(x, y);
+  }, [addBox]);
+
   const onOpenFile: ChangeEventHandler<HTMLInputElement> = async (e) => {
     const f = e.target.files?.[0];
     e.target.value = "";
@@ -368,7 +499,12 @@ export function Toolbar() {
     if (!file) return;
     try {
       const asset = await registerImageBlob(file);
-      useWhiteboardStore.getState().addImageBox(asset, 320, 240);
+      const s = useWhiteboardStore.getState();
+      const { x, y } = getViewportCenterTopLeft(s.viewport, s.viewportSize, {
+        width: Math.min(360, asset.width),
+        height: Math.min(240, asset.height),
+      });
+      addImageBox(asset, x, y);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Unable to add image.");
     }
@@ -377,27 +513,27 @@ export function Toolbar() {
   const preMenuConfig = useMemo(
     () =>
       buildPreMenuSlotConfig({
-        selectedBoxId,
+        hasSelection,
         tool,
         newBoard: onRequestNewBoard,
         onOpenPick: onRequestOpenPick,
         onSave,
         undo,
         redo,
-        addBox,
+        onAddBox,
         onPickImage,
-        deleteSelectedBox,
+        deleteSelectedBoxes,
         setTool,
       }),
     [
-      addBox,
-      deleteSelectedBox,
+      deleteSelectedBoxes,
+      hasSelection,
+      onAddBox,
       onPickImage,
       onRequestNewBoard,
       onRequestOpenPick,
       onSave,
       redo,
-      selectedBoxId,
       setTool,
       tool,
       undo,
@@ -429,9 +565,20 @@ export function Toolbar() {
   });
 
   const allSwatches = useMemo(() => getPaletteEntries(palette), [palette]);
+  const builtInSwatches = useMemo(
+    () => allSwatches.filter((entry) => entry.kind === "named"),
+    [allSwatches],
+  );
+  const customSwatches = useMemo(
+    () => allSwatches.filter((entry) => entry.kind === "custom"),
+    [allSwatches],
+  );
   const selectedBoxLabelKey = useMemo(
-    () => (selectedBoxId ? `${selectedBoxId}-${selectedBox?.label ?? ""}` : "no-box"),
-    [selectedBoxId, selectedBox?.label],
+    () =>
+      primarySelectedBoxId
+        ? `${primarySelectedBoxId}-${primarySelectedBox?.label ?? ""}`
+        : "no-box",
+    [primarySelectedBoxId, primarySelectedBox?.label],
   );
   const selectedLinkLabelKey = useMemo(
     () => (selectedLinkId ? `${selectedLinkId}-${selectedLink?.label ?? ""}` : "no-link"),
@@ -470,7 +617,7 @@ export function Toolbar() {
     setSelectedTextAlign("left");
     setIsFontSizeMenuOpen(false);
     setIsEditingFontSize(false);
-  }, [selectedBoxId]);
+  }, [primarySelectedBoxId]);
 
   useEffect(() => {
     if (isLgViewport) setIsToolbarOverflowOpen(false);
@@ -557,17 +704,29 @@ export function Toolbar() {
               {preMenuOverflowSlice}
             </div>
           ) : null}
-          {selectedBoxId ? (
+          {hasSelection && primarySelectedBoxId ? (
             <div className={`${TOOLBAR_GROUP_CLASS} border-l border-slate-200 pl-3`}>
               <span className={SECTION_LABEL_CLASS}>Z</span>
               <IconButton
                 icon={BringToFront}
                 label="Bring to front"
-                onClick={() => bringToFront(selectedBoxId)}
+                onClick={() => bringToFront(primarySelectedBoxId)}
               />
-              <IconButton icon={SendToBack} label="Send to back" onClick={() => sendToBack(selectedBoxId)} />
-              <IconButton icon={MoveUp} label="Bring forward" onClick={() => bringForward(selectedBoxId)} />
-              <IconButton icon={MoveDown} label="Send backward" onClick={() => sendBackward(selectedBoxId)} />
+              <IconButton
+                icon={SendToBack}
+                label="Send to back"
+                onClick={() => sendToBack(primarySelectedBoxId)}
+              />
+              <IconButton
+                icon={MoveUp}
+                label="Bring forward"
+                onClick={() => bringForward(primarySelectedBoxId)}
+              />
+              <IconButton
+                icon={MoveDown}
+                label="Send backward"
+                onClick={() => sendBackward(primarySelectedBoxId)}
+              />
             </div>
           ) : null}
           {selectedLinkId ? (
@@ -595,27 +754,46 @@ export function Toolbar() {
               />
             </div>
           ) : null}
-          <div className={TOOLBAR_GROUP_CLASS}>
-            <span className={SECTION_LABEL_CLASS}>
-              <PaintBucket size={14} />
-              Fill
-            </span>
-            {allSwatches.map(({ id, label, hex }) => (
-              <button
-                key={id}
-                type="button"
-                className={SWATCH_BUTTON_CLASS}
-                style={{ background: hex }}
-                aria-label={`Set box color to ${hex}`}
-                title={`Set box color to ${label}: ${hex}`}
-                onClick={() => {
-                  if (selectedBoxId) updateBoxStyle(selectedBoxId, { fill: hex });
-                }}
-              />
-            ))}
-            <IconButton icon={Plus} label="Add custom color" onClick={() => setIsColorModalOpen(true)} />
-          </div>
-          {selectedBoxId ? (
+          {hasSelection ? (
+            <div className={TOOLBAR_GROUP_CLASS}>
+              <span className={SECTION_LABEL_CLASS}>
+                <PaintBucket size={14} />
+                Fill
+                {selectedBoxIds.length > 1 ? (
+                  <span className="text-[0.65rem] normal-case text-slate-400">
+                    ({selectedBoxIds.length})
+                  </span>
+                ) : null}
+              </span>
+              {builtInSwatches.map(({ id, label, hex }) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={SWATCH_BUTTON_CLASS}
+                  style={{ background: hex }}
+                  aria-label={`Set box color to ${hex}`}
+                  title={`Set box color to ${label}: ${hex}`}
+                  onClick={() => {
+                    if (selectedBoxIds.length > 0) updateBoxStyles(selectedBoxIds, { fill: hex });
+                  }}
+                />
+              ))}
+              {customSwatches.length > 0 ? (
+                <SwatchDropdown
+                  ariaLabel="Custom fill color"
+                  title="Custom fill colors"
+                  icon={Palette}
+                  indicatorColor={isSingleSelection ? primarySelectedBox?.style.fill : undefined}
+                  swatches={customSwatches}
+                  onPick={(hex) => {
+                    if (selectedBoxIds.length > 0) updateBoxStyles(selectedBoxIds, { fill: hex });
+                  }}
+                />
+              ) : null}
+              <IconButton icon={Plus} label="Add custom color" onClick={() => setIsColorModalOpen(true)} />
+            </div>
+          ) : null}
+          {isSingleSelection && primarySelectedBoxId ? (
             <div className={TOOLBAR_GROUP_CLASS}>
               <label className={SECTION_LABEL_CLASS} htmlFor="wb-box-label-input">
                 Label
@@ -626,10 +804,10 @@ export function Toolbar() {
                 type="text"
                 placeholder="Optional"
                 key={selectedBoxLabelKey}
-                defaultValue={selectedBox?.label ?? ""}
+                defaultValue={primarySelectedBox?.label ?? ""}
                 onBlur={(e) => {
                   const t = e.target.value.trim();
-                  updateBoxLabel(selectedBoxId, t === "" ? undefined : t);
+                  updateBoxLabel(primarySelectedBoxId, t === "" ? undefined : t);
                 }}
               />
             </div>
@@ -784,10 +962,12 @@ export function Toolbar() {
                 aria-label="Font"
                 onChange={(e) => {
                   const ff = e.target.value;
+                  if (!ff) return;
                   runOnEditor((view) => {
                     setTextStyle({ fontFamily: ff })(view.state, view.dispatch);
                     view.focus();
                   });
+                  recordLastTextStyle({ fontFamily: ff });
                 }}
                 defaultValue=""
               >
@@ -800,24 +980,41 @@ export function Toolbar() {
                   </option>
                 ))}
               </select>
-              <div className="flex items-center gap-1">
-                {allSwatches.map(({ id, label, hex }) => (
-                  <button
-                    key={`text-${id}`}
-                    type="button"
-                    className={SMALL_SWATCH_BUTTON_CLASS}
-                    style={{ background: hex }}
-                    aria-label={`Set text color to ${hex}`}
-                    title={`Set text color to ${label}: ${hex}`}
-                    onClick={() =>
-                      runOnEditor((view) => {
-                        setTextStyle({ color: hex })(view.state, view.dispatch);
-                        view.focus();
-                      })
-                    }
-                  />
-                ))}
-              </div>
+              <SwatchDropdown
+                ariaLabel="Text color"
+                title="Text color"
+                icon={Type}
+                indicatorColor={primarySelectedBox?.style.textColor}
+                swatches={allSwatches}
+                onPick={(hex) => {
+                  runOnEditor((view) => {
+                    setTextStyle({ color: hex })(view.state, view.dispatch);
+                    view.focus();
+                  });
+                  if (primarySelectedBoxId) {
+                    updateBoxStyles([primarySelectedBoxId], { textColor: hex });
+                  }
+                }}
+              />
+              <SwatchDropdown
+                ariaLabel="Highlight color"
+                title="Highlight color"
+                icon={Highlighter}
+                swatches={allSwatches}
+                onPick={(hex) =>
+                  runOnEditor((view) => {
+                    setHighlight(hex)(view.state, view.dispatch);
+                    view.focus();
+                  })
+                }
+                onClear={() =>
+                  runOnEditor((view) => {
+                    setHighlight(null)(view.state, view.dispatch);
+                    view.focus();
+                  })
+                }
+                clearLabel="Remove"
+              />
             </div>
           ) : null}
         </div>

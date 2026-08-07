@@ -1,7 +1,9 @@
-import { memo, useCallback, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { getAssetUrl } from "../persistence/assetStore";
-import { useWhiteboardStore } from "../store/whiteboardStore";
+import { getPrimarySelectedBoxId, useWhiteboardStore } from "../store/whiteboardStore";
 import { useBoardTransform } from "../context/BoardTransformContext";
+import { useMultiDrag } from "../context/MultiDragContext";
 import { BoxPreview } from "./BoxPreview";
 import { ProseMirrorBoxEditor } from "./ProseMirrorBoxEditor";
 import type { Box as BoxType, ProseMirrorDocJSON } from "../model/types";
@@ -10,6 +12,11 @@ type Props = { boxId: string };
 
 const MIN_W = 120;
 const MIN_H = 80;
+
+/** Tools where box drag/select/edit interactions are active (everything but the link tool). */
+function isBoxInteractionTool(tool: "select" | "marquee" | "link"): boolean {
+  return tool !== "link";
+}
 
 type DragState = {
   kind: "move" | "resize";
@@ -28,22 +35,37 @@ type DragState = {
   curY: number;
   curW: number;
   curH: number;
+  /** When non-empty, this is a multi-box move that drives sibling boxes via MultiDragContext. */
+  participants: Array<{ id: string; startX: number; startY: number }>;
 };
 
 export const Box = memo(function Box({ boxId }: Props) {
   const box = useWhiteboardStore((s) => s.boxesById[boxId]) as BoxType | undefined;
   const tool = useWhiteboardStore((s) => s.tool);
-  const selectedBoxId = useWhiteboardStore((s) => s.selectedBoxId);
   const linkSourceId = useWhiteboardStore((s) => s.linkSourceId);
 
-  const selectBox = useWhiteboardStore((s) => s.selectBox);
+  const { isSelected, isPrimary, selectionSize } = useWhiteboardStore(
+    useShallow((s) => {
+      const ids = s.selectedBoxIds;
+      return {
+        isSelected: ids.includes(boxId),
+        isPrimary: getPrimarySelectedBoxId(s) === boxId,
+        selectionSize: ids.length,
+      };
+    }),
+  );
+
+  const selectBoxes = useWhiteboardStore((s) => s.selectBoxes);
+  const toggleBoxInSelection = useWhiteboardStore((s) => s.toggleBoxInSelection);
   const setLinkSource = useWhiteboardStore((s) => s.setLinkSource);
   const tryCompleteLink = useWhiteboardStore((s) => s.tryCompleteLink);
   const updateBoxContent = useWhiteboardStore((s) => s.updateBoxContent);
   const commitBoxPosition = useWhiteboardStore((s) => s.commitBoxPosition);
+  const commitMultiBoxPositions = useWhiteboardStore((s) => s.commitMultiBoxPositions);
   const commitBoxSize = useWhiteboardStore((s) => s.commitBoxSize);
 
   const { clientToWorld, isViewportTouchGestureActive } = useBoardTransform();
+  const multiDrag = useMultiDrag();
 
   /** Live x,y,w,h during drag/resize — drives React style so PM/store updates cannot snap the box back. */
   const [liveLayout, setLiveLayout] = useState<{
@@ -82,6 +104,27 @@ export const Box = memo(function Box({ boxId }: Props) {
     });
   }, [flushLiveLayoutFromDrag]);
 
+  // When this box is a non-primary participant in a multi-box drag, react to shared offset updates.
+  useEffect(() => {
+    return multiDrag.subscribe(boxId, (offset) => {
+      if (offset === null) {
+        // Only clear if this Box wasn't the drag leader (leader manages its own liveLayout).
+        if (!dragRef.current) setLiveLayout(null);
+        return;
+      }
+      // Don't override leader's local state.
+      if (dragRef.current) return;
+      const b = useWhiteboardStore.getState().boxesById[boxId];
+      if (!b) return;
+      setLiveLayout({
+        x: b.x + offset.dx,
+        y: b.y + offset.dy,
+        w: b.width,
+        h: b.height,
+      });
+    });
+  }, [boxId, multiDrag]);
+
   const endDrag = useCallback(() => {
     const d = dragRef.current;
     dragRef.current = null;
@@ -100,7 +143,21 @@ export const Box = memo(function Box({ boxId }: Props) {
       /* already released */
     }
     if (d.kind === "move") {
-      if (d.curX !== d.startBoxX || d.curY !== d.startBoxY) {
+      const moved = d.curX !== d.startBoxX || d.curY !== d.startBoxY;
+      if (d.participants.length > 0) {
+        if (moved) {
+          const dx = d.curX - d.startBoxX;
+          const dy = d.curY - d.startBoxY;
+          commitMultiBoxPositions(
+            d.participants.map((p) => ({
+              id: p.id,
+              x: p.startX + dx,
+              y: p.startY + dy,
+            })),
+          );
+        }
+        multiDrag.end();
+      } else if (moved) {
         commitBoxPosition(boxId, d.curX, d.curY);
       }
     } else {
@@ -110,7 +167,7 @@ export const Box = memo(function Box({ boxId }: Props) {
       }
     }
     setLiveLayout(null);
-  }, [boxId, commitBoxPosition, commitBoxSize]);
+  }, [boxId, commitBoxPosition, commitBoxSize, commitMultiBoxPositions, multiDrag]);
 
   const cancelDrag = useCallback(() => {
     const d = dragRef.current;
@@ -125,8 +182,9 @@ export const Box = memo(function Box({ boxId }: Props) {
     } catch {
       /* already released */
     }
+    if (d?.participants.length) multiDrag.end();
     setLiveLayout(null);
-  }, []);
+  }, [multiDrag]);
 
   const onPointerMove = useCallback(
     (e: PointerEvent) => {
@@ -142,6 +200,9 @@ export const Box = memo(function Box({ boxId }: Props) {
       if (d.kind === "move") {
         d.curX = d.startBoxX + dx;
         d.curY = d.startBoxY + dy;
+        if (d.participants.length > 0) {
+          multiDrag.update({ dx, dy });
+        }
       } else {
         if (d.aspectRatio) {
           const minScale = Math.max(MIN_W / d.startW, MIN_H / d.startH);
@@ -157,7 +218,7 @@ export const Box = memo(function Box({ boxId }: Props) {
       }
       scheduleLayoutFlush();
     },
-    [cancelDrag, clientToWorld, isViewportTouchGestureActive, scheduleLayoutFlush],
+    [cancelDrag, clientToWorld, isViewportTouchGestureActive, multiDrag, scheduleLayoutFlush],
   );
 
   const onPointerUp = useCallback(
@@ -174,9 +235,10 @@ export const Box = memo(function Box({ boxId }: Props) {
 
   const startMove = useCallback(
     (e: React.PointerEvent) => {
-      if (e.button !== 0 || tool !== "select") return;
+      if (e.button !== 0 || !isBoxInteractionTool(tool)) return;
       if (e.pointerType === "touch" && isViewportTouchGestureActive()) return;
-      const b = useWhiteboardStore.getState().boxesById[boxId];
+      const state = useWhiteboardStore.getState();
+      const b = state.boxesById[boxId];
       if (!b) return;
       e.stopPropagation();
       e.preventDefault();
@@ -184,6 +246,19 @@ export const Box = memo(function Box({ boxId }: Props) {
       captureTarget.setPointerCapture(e.pointerId);
       const abortController = new AbortController();
       const w = clientToWorld(e.clientX, e.clientY);
+
+      // If this box is part of a multi-selection, drag all of them together.
+      const selectedIds = state.selectedBoxIds;
+      const isInSelection = selectedIds.includes(boxId);
+      const participantIds =
+        isInSelection && selectedIds.length > 1
+          ? selectedIds.filter((id) => !!state.boxesById[id])
+          : [];
+      const participants = participantIds.map((id) => {
+        const pb = state.boxesById[id];
+        return { id, startX: pb.x, startY: pb.y };
+      });
+
       dragRef.current = {
         kind: "move",
         pointerId: e.pointerId,
@@ -201,7 +276,13 @@ export const Box = memo(function Box({ boxId }: Props) {
         curY: b.y,
         curW: b.width,
         curH: b.height,
+        participants,
       };
+
+      if (participants.length > 0) {
+        multiDrag.begin(participants.map((p) => p.id));
+      }
+
       flushLiveLayoutFromDrag();
       window.addEventListener("pointermove", onPointerMove, { signal: abortController.signal });
       window.addEventListener("pointerup", onPointerUp, { signal: abortController.signal });
@@ -212,6 +293,7 @@ export const Box = memo(function Box({ boxId }: Props) {
       clientToWorld,
       flushLiveLayoutFromDrag,
       isViewportTouchGestureActive,
+      multiDrag,
       onPointerMove,
       onPointerUp,
       tool,
@@ -220,7 +302,7 @@ export const Box = memo(function Box({ boxId }: Props) {
 
   const startResize = useCallback(
     (e: React.PointerEvent) => {
-      if (e.button !== 0 || tool !== "select" || selectedBoxId !== boxId) return;
+      if (e.button !== 0 || !isBoxInteractionTool(tool) || !isPrimary) return;
       if (e.pointerType === "touch" && isViewportTouchGestureActive()) return;
       const b = useWhiteboardStore.getState().boxesById[boxId];
       if (!b) return;
@@ -247,6 +329,7 @@ export const Box = memo(function Box({ boxId }: Props) {
         curY: b.y,
         curW: b.width,
         curH: b.height,
+        participants: [],
       };
       flushLiveLayoutFromDrag();
       window.addEventListener("pointermove", onPointerMove, { signal: abortController.signal });
@@ -257,16 +340,17 @@ export const Box = memo(function Box({ boxId }: Props) {
       boxId,
       clientToWorld,
       flushLiveLayoutFromDrag,
+      isPrimary,
       isViewportTouchGestureActive,
       onPointerMove,
       onPointerUp,
-      selectedBoxId,
       tool,
     ],
   );
 
   if (!box) return null;
 
+  /** Returns true when the caller should proceed with an in-box interaction (e.g. dragging the image body). */
   const beginBoxInteraction = (e: React.PointerEvent): boolean => {
     const target = e.target;
     if (target instanceof Element && target.closest("a[href]")) return false;
@@ -281,7 +365,19 @@ export const Box = memo(function Box({ boxId }: Props) {
       }
       return false;
     }
-    selectBox(boxId);
+
+    // Shift+click toggles this box in/out of the multi-selection without entering edit mode.
+    if (e.shiftKey) {
+      toggleBoxInSelection(boxId);
+      return false;
+    }
+
+    // Clicking an already-selected box keeps the existing multi-selection (so a drag moves all).
+    // Clicking an unselected box replaces the selection with this one.
+    const state = useWhiteboardStore.getState();
+    if (!state.selectedBoxIds.includes(boxId)) {
+      selectBoxes([boxId]);
+    }
     return true;
   };
 
@@ -294,8 +390,14 @@ export const Box = memo(function Box({ boxId }: Props) {
     startMove(e);
   };
 
-  const isSelected = selectedBoxId === boxId;
-  const useEditor = box.kind === "text" && isSelected && tool === "select";
+  const onTextHeaderPointerDown = (e: React.PointerEvent) => {
+    if (!beginBoxInteraction(e)) return;
+    startMove(e);
+  };
+
+  // Editor only mounts when this is the only selected text box (multi-selection should not trap caret).
+  const useEditor =
+    box.kind === "text" && isPrimary && selectionSize === 1 && isBoxInteractionTool(tool);
   const imageUrl = box.kind === "image" ? getAssetUrl(box.assetId) : null;
   const imageLabel = box.kind === "image" && box.label?.trim() ? box.label.trim() : null;
   const isImageLinkSource = box.kind === "image" && tool === "link" && linkSourceId === boxId;
@@ -310,9 +412,9 @@ export const Box = memo(function Box({ boxId }: Props) {
   return (
     <div
       className={`wb-box absolute flex shrink-0 flex-col overflow-hidden shadow-sm ${
-        box.kind === "image" && tool === "select" ? "cursor-grab active:cursor-grabbing" : "cursor-default"
+        box.kind === "image" && isBoxInteractionTool(tool) ? "cursor-grab active:cursor-grabbing" : "cursor-default"
       } ${
-        isSelected ? "shadow-lg ring-2 ring-violet-500" : ""
+        isSelected ? `shadow-lg ring-2 ${isPrimary ? "ring-violet-500" : "ring-violet-400/70"}` : ""
       }`}
       style={{
         left: layout.x,
@@ -329,7 +431,7 @@ export const Box = memo(function Box({ boxId }: Props) {
       {box.kind === "text" ? (
         <div
           className="flex flex-none items-center gap-2 border-b border-black/10 bg-white/45 px-2 py-1 select-none active:cursor-grabbing"
-          onPointerDown={startMove}
+          onPointerDown={onTextHeaderPointerDown}
           title="Drag to move"
           style={{ cursor: "grab" }}
         >
@@ -389,7 +491,7 @@ export const Box = memo(function Box({ boxId }: Props) {
           </>
         )}
       </div>
-      {isSelected && tool === "select" ? (
+      {isPrimary && isBoxInteractionTool(tool) ? (
         <button
           type="button"
           className="absolute bottom-0.5 right-0.5 h-3.5 w-3.5 cursor-se-resize rounded-sm border-0 bg-transparent p-0"

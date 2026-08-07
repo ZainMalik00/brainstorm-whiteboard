@@ -9,6 +9,11 @@ export interface Viewport {
 export interface Palette {
   named: Record<string, string>;
   custom: string[];
+  /**
+   * Optional user-provided labels for entries in `custom`, parallel-indexed.
+   * Empty string or missing entries fall back to a default label like "Custom N".
+   */
+  customLabels?: string[];
 }
 
 /** ProseMirror JSON for a full `doc` node */

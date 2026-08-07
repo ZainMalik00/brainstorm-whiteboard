@@ -4,6 +4,7 @@ import {
   SCHEMA_VERSION,
   type ImageAsset,
   type Box,
+  type BoxStyle,
   type Palette,
   type Viewport,
   type WhiteboardFile,
@@ -12,6 +13,12 @@ import { fileFromRuntime, runtimeFromFile, type WhiteboardRuntime } from "./norm
 import { getDefaultBoxStyle } from "./palette";
 
 const defaultViewport: Viewport = { panX: 0, panY: 0, zoom: 1 };
+
+export type BoxStyleOverrides = {
+  fill?: string;
+  stroke?: string;
+  textColor?: string;
+};
 
 export function createEmptyWhiteboardFile(): WhiteboardFile {
   return {
@@ -31,7 +38,24 @@ export function createEmptyRuntime(): WhiteboardRuntime {
   return runtimeFromFile(createEmptyWhiteboardFile());
 }
 
-export function createBoxAt(x: number, y: number, zIndex: number, palette: Palette = DEFAULT_PALETTE): Box {
+function mergeBoxStyle(palette: Palette, overrides?: BoxStyleOverrides): BoxStyle {
+  const base = getDefaultBoxStyle(palette);
+  if (!overrides) return base;
+  return {
+    fill: overrides.fill ?? base.fill,
+    stroke: overrides.stroke ?? base.stroke,
+    borderRadius: base.borderRadius,
+    textColor: overrides.textColor ?? base.textColor,
+  };
+}
+
+export function createBoxAt(
+  x: number,
+  y: number,
+  zIndex: number,
+  palette: Palette = DEFAULT_PALETTE,
+  styleOverrides?: BoxStyleOverrides,
+): Box {
   return {
     id: crypto.randomUUID(),
     kind: "text",
@@ -40,7 +64,7 @@ export function createBoxAt(x: number, y: number, zIndex: number, palette: Palet
     width: 280,
     height: 160,
     zIndex,
-    style: getDefaultBoxStyle(palette),
+    style: mergeBoxStyle(palette, styleOverrides),
     content: structuredClone(EMPTY_DOC_JSON),
   };
 }
@@ -63,6 +87,7 @@ export function createImageBoxAt(
   zIndex: number,
   asset: ImageAsset,
   palette: Palette = DEFAULT_PALETTE,
+  styleOverrides?: BoxStyleOverrides,
 ): Box {
   const size = clampImageBoxSize(asset);
   return {
@@ -73,7 +98,7 @@ export function createImageBoxAt(
     width: size.width,
     height: size.height,
     zIndex,
-    style: getDefaultBoxStyle(palette),
+    style: mergeBoxStyle(palette, styleOverrides),
     assetId: asset.id,
   };
 }

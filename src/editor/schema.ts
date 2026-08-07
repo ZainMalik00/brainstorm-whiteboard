@@ -60,6 +60,43 @@ const textStyle: MarkSpec = {
   },
 };
 
+const highlight: MarkSpec = {
+  attrs: {
+    color: { default: null },
+  },
+  inclusive: true,
+  parseDOM: [
+    {
+      tag: "mark",
+      getAttrs(dom: HTMLElement | string) {
+        if (typeof dom === "string") return false;
+        const color = dom.style.backgroundColor || dom.getAttribute("data-color");
+        return { color: color || null };
+      },
+    },
+    {
+      tag: "span[data-highlight]",
+      getAttrs(dom: HTMLElement | string) {
+        if (typeof dom === "string") return false;
+        const color = dom.getAttribute("data-highlight") || dom.style.backgroundColor;
+        if (!color) return false;
+        return { color };
+      },
+    },
+  ],
+  toDOM(mark) {
+    const color = typeof mark.attrs.color === "string" ? mark.attrs.color : null;
+    return [
+      "mark",
+      {
+        ...(color ? { style: `background-color: ${color}`, "data-color": color } : {}),
+        class: "wb-highlight",
+      },
+      0,
+    ];
+  },
+};
+
 const paragraph: NodeSpec = {
   ...basicNodes.paragraph,
   attrs: {
@@ -155,6 +192,7 @@ const image: NodeSpec = {
 const marks = {
   ...basicMarks,
   textStyle,
+  highlight,
 };
 
 const nodes = addListNodes(
